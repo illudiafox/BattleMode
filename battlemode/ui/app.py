@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 
+from battlemode.capture.window_capture import WindowCapture, WindowInfo, list_windows
 from battlemode.music.player import MusicPlayer, PlayerState
 from battlemode.music.playlist import Playlist, Track
 from battlemode.music.youtube import download_audio, is_youtube_url
@@ -70,6 +71,8 @@ class MainWindow(QMainWindow):
         self._current_state = GameState.UNKNOWN
         self._detection_active = False
         self._stop_event = threading.Event()
+
+        self._capture_window: WindowInfo | None = None   # None = full screen
 
         self.setWindowTitle("BattleMode")
         self.setMinimumSize(900, 600)
@@ -133,7 +136,7 @@ class MainWindow(QMainWindow):
         self._state_label.setFont(QFont("monospace", 14, QFont.Weight.Bold))
         self._state_label.setFixedWidth(130)
         self._state_label.setFixedHeight(36)
-        self._state_label.setStyleSheet(f"background: #888; color: white; border-radius: 6px;")
+        self._state_label.setStyleSheet("background: #888; color: white; border-radius: 6px;")
         layout.addWidget(self._state_label)
 
         layout.addSpacing(12)
@@ -141,11 +144,36 @@ class MainWindow(QMainWindow):
         # Profile selector
         layout.addWidget(QLabel("Profile:"))
         self._profile_combo = QComboBox()
-        self._profile_combo.setMinimumWidth(180)
+        self._profile_combo.setMinimumWidth(160)
         for name in self.profile_manager.list_profiles():
             self._profile_combo.addItem(name)
         self._profile_combo.currentTextChanged.connect(self._on_profile_changed)
         layout.addWidget(self._profile_combo)
+
+        layout.addSpacing(16)
+
+        # Capture source
+        layout.addWidget(QLabel("Source:"))
+        self._source_mode_combo = QComboBox()
+        self._source_mode_combo.addItem("Full Screen")
+        self._source_mode_combo.addItem("Browser Window")
+        self._source_mode_combo.addItem("OBS Window")
+        self._source_mode_combo.setFixedWidth(130)
+        self._source_mode_combo.currentIndexChanged.connect(self._on_source_mode_changed)
+        layout.addWidget(self._source_mode_combo)
+
+        self._window_combo = QComboBox()
+        self._window_combo.setMinimumWidth(220)
+        self._window_combo.setEnabled(False)
+        self._window_combo.setPlaceholderText("Pick a window…")
+        layout.addWidget(self._window_combo)
+
+        self._refresh_windows_btn = QPushButton("↻")
+        self._refresh_windows_btn.setFixedWidth(28)
+        self._refresh_windows_btn.setToolTip("Refresh window list")
+        self._refresh_windows_btn.setEnabled(False)
+        self._refresh_windows_btn.clicked.connect(self._refresh_window_list)
+        layout.addWidget(self._refresh_windows_btn)
 
         layout.addStretch()
 
@@ -157,6 +185,40 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._detect_btn)
 
         return bar
+
+    def _on_source_mode_changed(self, index: int) -> None:
+        is_window_mode = index > 0   # 0 = Full Screen
+        self._window_combo.setEnabled(is_window_mode)
+        self._refresh_windows_btn.setEnabled(is_window_mode)
+        if is_window_mode:
+            self._refresh_window_list()
+        else:
+            self._capture_window = None
+            self.statusBar().showMessage("Capture source: Full Screen")
+
+    def _refresh_window_list(self) -> None:
+        mode = self._source_mode_combo.currentText()
+        self._window_combo.clear()
+        self._windows: list[WindowInfo] = list_windows()
+
+        filter_term = "obs" if "OBS" in mode else None
+
+        for w in self._windows:
+            if filter_term and filter_term not in w.title.lower():
+                continue
+            self._window_combo.addItem(w.title, w)
+
+        if self._window_combo.count() == 0:
+            self._window_combo.addItem("(no windows found)")
+
+        self._window_combo.currentIndexChanged.connect(self._on_window_selected)
+
+    def _on_window_selected(self, index: int) -> None:
+        w = self._window_combo.itemData(index)
+        if isinstance(w, WindowInfo):
+            self._capture_window = w
+            self._detection_manager.set_capture_window(w)
+            self.statusBar().showMessage(f"Capture source: {w.title} ({w.width}×{w.height})")
 
     def _build_playlist_tabs(self) -> QWidget:
         self._tabs = QTabWidget()
@@ -418,9 +480,16 @@ class MainWindow(QMainWindow):
         detector = StateDetector(profile)
         self._stop_event.clear()
 
+        capture_window = self._capture_window
+
         def loop():
             last = GameState.UNKNOWN
-            with ScreenCapture() as cap:
+            if capture_window:
+                cap = WindowCapture(capture_window)
+            else:
+                from battlemode.capture.screen_capture import ScreenCapture
+                cap = ScreenCapture()
+            with cap:
                 while not self._stop_event.is_set():
                     frame = cap.grab()
                     state = detector.detect(frame)

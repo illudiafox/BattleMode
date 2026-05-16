@@ -344,6 +344,10 @@ class DetectionManagerWidget(QWidget):
     #  Test detection                                                       #
     # ------------------------------------------------------------------ #
 
+    def set_capture_window(self, window) -> None:
+        """Called by MainWindow to pass the selected capture window (or None = full screen)."""
+        self._capture_window = window
+
     def _run_test(self) -> None:
         if not self._profile:
             QMessageBox.warning(self, "No profile", "Load a profile first.")
@@ -351,14 +355,22 @@ class DetectionManagerWidget(QWidget):
 
         self._test_btn.setEnabled(False)
         self._test_btn.setText("Capturing…")
+        capture_window = getattr(self, "_capture_window", None)
 
         def worker():
             try:
-                from battlemode.capture.screen_capture import ScreenCapture
                 from battlemode.vision.state_detector import StateDetector, _extract_text
 
                 detector = StateDetector(self._profile)
-                with ScreenCapture() as cap:
+
+                if capture_window:
+                    from battlemode.capture.window_capture import WindowCapture
+                    cap = WindowCapture(capture_window)
+                else:
+                    from battlemode.capture.screen_capture import ScreenCapture
+                    cap = ScreenCapture()
+
+                with cap:
                     frame = cap.grab()
 
                 state = detector.detect(frame)
