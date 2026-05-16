@@ -54,7 +54,8 @@ class StateDetector:
     def _matches(self, frame: np.ndarray, rule: DetectionRule) -> bool:
         if rule.ocr_text:
             text = _extract_text(frame, rule.ocr_region)
-            if any(keyword in text for keyword in rule.ocr_text):
+            matched = sum(1 for keyword in rule.ocr_text if keyword in text)
+            if matched >= rule.min_keywords:
                 return True
         # Template matching goes here in the future
         return False

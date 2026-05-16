@@ -92,6 +92,11 @@ class DetectionManagerWidget(QWidget):
         self._profile_combo.currentTextChanged.connect(self._load_profile)
         layout.addWidget(self._profile_combo)
 
+        # Load the initially selected profile immediately (currentTextChanged won't fire on first paint)
+        initial = self._profile_combo.currentText()
+        if initial:
+            self._load_profile(initial)
+
         layout.addStretch()
 
         save_btn = QPushButton("Save Profile")
@@ -138,7 +143,7 @@ class DetectionManagerWidget(QWidget):
         form.addRow("Priority:", self._priority_spin)
 
         # OCR keywords
-        kw_hint = QLabel("One keyword per line. Detection triggers if ANY keyword is found in the OCR text.")
+        kw_hint = QLabel("One keyword per line. State triggers when at least N keywords are found.")
         kw_hint.setWordWrap(True)
         kw_hint.setStyleSheet("color: #888; font-size: 11px;")
         form.addRow(kw_hint)
@@ -147,6 +152,19 @@ class DetectionManagerWidget(QWidget):
         self._keywords_edit.setPlaceholderText("fight\nbag\nuse\nhp\nrun")
         self._keywords_edit.setMaximumHeight(130)
         form.addRow("Keywords:", self._keywords_edit)
+
+        # Min keywords threshold
+        min_kw_row = QWidget()
+        min_kw_layout = QHBoxLayout(min_kw_row)
+        min_kw_layout.setContentsMargins(0, 0, 0, 0)
+        self._min_keywords_spin = QSpinBox()
+        self._min_keywords_spin.setRange(1, 50)
+        self._min_keywords_spin.setValue(1)
+        self._min_keywords_spin.setFixedWidth(60)
+        min_kw_layout.addWidget(self._min_keywords_spin)
+        min_kw_layout.addWidget(QLabel("keyword(s) must match to trigger this state"))
+        min_kw_layout.addStretch()
+        form.addRow("Min matches:", min_kw_row)
 
         # Region
         region_hint = QLabel("Leave all zeros to scan the full screen. Use x/y/w/h to limit to a region (pixels).")
@@ -248,8 +266,8 @@ class DetectionManagerWidget(QWidget):
 
     def _rule_label(self, rule: DetectionRule) -> str:
         keywords = ", ".join(rule.ocr_text or [])[:50]
-        region = "full screen" if not rule.ocr_region else f"region {rule.ocr_region}"
-        return f"[{rule.state.value.upper()}] p{rule.priority}  |  {keywords}  ({region})"
+        region = "full screen" if not rule.ocr_region else "region"
+        return f"[{rule.state.value.upper()}] p{rule.priority}  min:{rule.min_keywords}  |  {keywords}  ({region})"
 
     def _on_rule_selected(self, row: int) -> None:
         if not self._profile or row < 0:
@@ -266,6 +284,7 @@ class DetectionManagerWidget(QWidget):
             self._state_combo.setCurrentIndex(idx)
 
         self._priority_spin.setValue(rule.priority)
+        self._min_keywords_spin.setValue(rule.min_keywords)
         self._keywords_edit.setPlainText("\n".join(rule.ocr_text or []))
 
         if rule.ocr_region:
@@ -311,6 +330,7 @@ class DetectionManagerWidget(QWidget):
         state_label = self._state_combo.currentText()
         rule.state = LABEL_TO_STATE.get(state_label, GameState.UNKNOWN)
         rule.priority = self._priority_spin.value()
+        rule.min_keywords = self._min_keywords_spin.value()
 
         raw = self._keywords_edit.toPlainText()
         rule.ocr_text = [kw.strip().lower() for kw in raw.splitlines() if kw.strip()]

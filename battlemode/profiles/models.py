@@ -23,8 +23,9 @@ class DetectionRule(BaseModel):
 
     state: GameState
     # OCR-based: look for text in a screen region
-    ocr_text: Optional[list[str]] = None          # any of these strings triggers the state
+    ocr_text: Optional[list[str]] = None          # keywords to search for
     ocr_region: Optional[tuple[int, int, int, int]] = None  # (x, y, w, h) — None = full screen
+    min_keywords: int = 1                         # how many keywords must match to trigger
 
     # Image template matching (future)
     template_path: Optional[str] = None
