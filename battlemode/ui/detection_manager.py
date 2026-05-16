@@ -80,6 +80,10 @@ class DetectionManagerWidget(QWidget):
         # OCR test strip
         root.addWidget(self._build_test_strip())
 
+        # Load initial profile now that all widgets exist
+        if self._initial_profile:
+            self._load_profile(self._initial_profile)
+
     def _build_profile_bar(self) -> QWidget:
         bar = QWidget()
         layout = QHBoxLayout(bar)
@@ -91,11 +95,7 @@ class DetectionManagerWidget(QWidget):
         self._refresh_profile_combo()
         self._profile_combo.currentTextChanged.connect(self._load_profile)
         layout.addWidget(self._profile_combo)
-
-        # Load the initially selected profile immediately (currentTextChanged won't fire on first paint)
-        initial = self._profile_combo.currentText()
-        if initial:
-            self._load_profile(initial)
+        self._initial_profile = self._profile_combo.currentText()
 
         layout.addStretch()
 

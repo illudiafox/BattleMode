@@ -264,7 +264,7 @@ class MainWindow(QMainWindow):
         self._np_state.setWordWrap(True)
 
         self._np_track = QLabel("No track playing")
-        self._np_track.setFont(QFont("sans-serif", 11, QFont.Weight.Bold))
+        self._np_track.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         self._np_track.setWordWrap(True)
 
         layout.addWidget(QLabel("Current state:"))
