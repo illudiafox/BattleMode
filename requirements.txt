@@ -1,0 +1,22 @@
+# Screen capture
+mss>=9.0.1
+opencv-python>=4.9.0
+
+# OCR
+pytesseract>=0.3.10
+Pillow>=10.0.0
+
+# Audio
+python-vlc>=3.0.21203
+
+# YouTube
+yt-dlp>=2024.1.0
+
+# GUI
+PyQt6>=6.6.0
+
+# Data / config
+pydantic>=2.0.0
+
+# Utilities
+numpy>=1.26.0

@@ -1,0 +1,87 @@
+{
+  "name": "Pokemon Champions",
+  "game_id": "pokemon_champions",
+  "description": "Detection profile for Pokemon Champions on Twitch via OBS capture card.",
+  "version": "1.0",
+  "capture_source": null,
+  "detection_rules": [
+    {
+      "state": "battle",
+      "priority": 10,
+      "ocr_text": ["fight", "bag", "pokemon", "run", "hp"],
+      "ocr_region": null,
+      "template_path": null,
+      "template_threshold": 0.85
+    },
+    {
+      "state": "selection",
+      "priority": 8,
+      "ocr_text": ["choose your", "select pokemon", "pick your team"],
+      "ocr_region": null,
+      "template_path": null,
+      "template_threshold": 0.85
+    },
+    {
+      "state": "win",
+      "priority": 9,
+      "ocr_text": ["you win", "victory", "winner"],
+      "ocr_region": null,
+      "template_path": null,
+      "template_threshold": 0.85
+    },
+    {
+      "state": "loss",
+      "priority": 9,
+      "ocr_text": ["you lose", "defeated", "blacked out", "whited out"],
+      "ocr_region": null,
+      "template_path": null,
+      "template_threshold": 0.85
+    },
+    {
+      "state": "menu",
+      "priority": 1,
+      "ocr_text": ["press start", "main menu", "play", "options", "title"],
+      "ocr_region": null,
+      "template_path": null,
+      "template_threshold": 0.85
+    }
+  ],
+  "phase_config": {
+    "menu": {
+      "repeat": true,
+      "repeat_track": false,
+      "shuffle": true,
+      "transition_fade_ms": 1500
+    },
+    "selection": {
+      "repeat": true,
+      "repeat_track": false,
+      "shuffle": true,
+      "transition_fade_ms": 800
+    },
+    "battle": {
+      "repeat": true,
+      "repeat_track": false,
+      "shuffle": false,
+      "transition_fade_ms": 500
+    },
+    "win": {
+      "repeat": false,
+      "repeat_track": true,
+      "shuffle": false,
+      "transition_fade_ms": 300
+    },
+    "loss": {
+      "repeat": false,
+      "repeat_track": true,
+      "shuffle": false,
+      "transition_fade_ms": 300
+    },
+    "unknown": {
+      "repeat": true,
+      "repeat_track": false,
+      "shuffle": false,
+      "transition_fade_ms": 1500
+    }
+  }
+}

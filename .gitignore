@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Music library (local files — too large for git)
+music/
+
+# Downloaded YouTube audio cache
+.cache/
+yt_cache/
+
+# User data
+*.log
+user_data/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# macOS
+.DS_Store
+
+# Environment
+.env
