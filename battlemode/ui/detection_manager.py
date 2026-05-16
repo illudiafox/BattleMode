@@ -130,6 +130,11 @@ class DetectionManagerWidget(QWidget):
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         form.setSpacing(10)
 
+        # Enabled
+        self._enabled_cb = QCheckBox("Rule enabled")
+        self._enabled_cb.setChecked(True)
+        form.addRow(self._enabled_cb)
+
         # State
         self._state_combo = QComboBox()
         for label in STATE_LABELS.values():
@@ -267,7 +272,8 @@ class DetectionManagerWidget(QWidget):
     def _rule_label(self, rule: DetectionRule) -> str:
         keywords = ", ".join(rule.ocr_text or [])[:50]
         region = "full screen" if not rule.ocr_region else "region"
-        return f"[{rule.state.value.upper()}] p{rule.priority}  min:{rule.min_keywords}  |  {keywords}  ({region})"
+        status = "" if rule.enabled else "  [DISABLED]"
+        return f"[{rule.state.value.upper()}] p{rule.priority}  min:{rule.min_keywords}  |  {keywords}  ({region}){status}"
 
     def _on_rule_selected(self, row: int) -> None:
         if not self._profile or row < 0:
@@ -278,6 +284,8 @@ class DetectionManagerWidget(QWidget):
         self._populate_form(rule)
 
     def _populate_form(self, rule: DetectionRule) -> None:
+        self._enabled_cb.setChecked(rule.enabled)
+
         label = STATE_LABELS.get(rule.state, "Unknown")
         idx = self._state_combo.findText(label)
         if idx >= 0:
@@ -327,6 +335,7 @@ class DetectionManagerWidget(QWidget):
         rules = sorted(self._profile.detection_rules, key=lambda r: -r.priority)
         rule = rules[self._selected_index]
 
+        rule.enabled = self._enabled_cb.isChecked()
         state_label = self._state_combo.currentText()
         rule.state = LABEL_TO_STATE.get(state_label, GameState.UNKNOWN)
         rule.priority = self._priority_spin.value()

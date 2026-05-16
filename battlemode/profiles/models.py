@@ -22,6 +22,7 @@ class DetectionRule(BaseModel):
     """A single OCR or image-based detection rule for a game state."""
 
     state: GameState
+    enabled: bool = True                          # disabled rules are never evaluated
     # OCR-based: look for text in a screen region
     ocr_text: Optional[list[str]] = None          # keywords to search for
     ocr_region: Optional[tuple[int, int, int, int]] = None  # (x, y, w, h) — None = full screen

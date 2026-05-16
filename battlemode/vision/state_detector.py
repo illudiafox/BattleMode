@@ -52,6 +52,8 @@ class StateDetector:
         return GameState.UNKNOWN
 
     def _matches(self, frame: np.ndarray, rule: DetectionRule) -> bool:
+        if not rule.enabled:
+            return False
         if rule.ocr_text:
             text = _extract_text(frame, rule.ocr_region)
             matched = sum(1 for keyword in rule.ocr_text if keyword in text)

@@ -198,18 +198,21 @@ class MainWindow(QMainWindow):
 
     def _refresh_window_list(self) -> None:
         mode = self._source_mode_combo.currentText()
+        self._window_combo.currentIndexChanged.disconnect()
         self._window_combo.clear()
-        self._windows: list[WindowInfo] = list_windows()
 
+        all_windows = list_windows()
         filter_term = "obs" if "OBS" in mode else None
 
-        for w in self._windows:
+        for w in all_windows:
             if filter_term and filter_term not in w.title.lower():
                 continue
             self._window_combo.addItem(w.title, w)
 
         if self._window_combo.count() == 0:
             self._window_combo.addItem("(no windows found)")
+        else:
+            self.statusBar().showMessage(f"Found {self._window_combo.count()} window(s)")
 
         self._window_combo.currentIndexChanged.connect(self._on_window_selected)
 
@@ -242,10 +245,14 @@ class MainWindow(QMainWindow):
             add_file_btn.clicked.connect(lambda _, s=state: self._add_files(s))
             add_yt_btn = QPushButton("+ YouTube URL")
             add_yt_btn.clicked.connect(lambda _, s=state: self._add_youtube(s))
+            rescan_btn = QPushButton("↻ Rescan Folder")
+            rescan_btn.setToolTip("Re-scan the music folder for this category")
+            rescan_btn.clicked.connect(lambda _, s=state: self._rescan_folder(s))
             remove_btn = QPushButton("Remove")
             remove_btn.clicked.connect(lambda _, s=state: self._remove_selected(s))
             btn_row.addWidget(add_file_btn)
             btn_row.addWidget(add_yt_btn)
+            btn_row.addWidget(rescan_btn)
             btn_row.addWidget(remove_btn)
             layout.addLayout(btn_row)
 
@@ -360,16 +367,33 @@ class MainWindow(QMainWindow):
                 list_widget.addItem(QListWidgetItem(track.title))
 
     def _add_files(self, state: GameState) -> None:
+        start_dir = MUSIC_DIR / ("win_loss" if state in (GameState.WIN, GameState.LOSS) else state.value)
+        start_dir.mkdir(parents=True, exist_ok=True)
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Add audio files", str(MUSIC_DIR / state.value),
+            self, "Add audio files", str(start_dir),
             "Audio Files (*.mp3 *.ogg *.flac *.wav *.m4a)"
         )
+        if not paths:
+            return
         playlist = self.player.get_playlist(state)
-        if playlist:
-            for path in paths:
-                playlist.add_track(Track(path))
-            self._refresh_list(state)
-        self.statusBar().showMessage(f"Added {len(paths)} file(s) to {state.value}")
+        if playlist is None:
+            QMessageBox.warning(self, "Playlist error", f"No playlist initialised for {state.value}. Restart the app.")
+            return
+        for path in paths:
+            playlist.add_track(Track(path))
+        self._refresh_list(state)
+        self.statusBar().showMessage(f"Added {len(paths)} file(s) to {STATE_LABELS[state]}")
+
+    def _rescan_folder(self, state: GameState) -> None:
+        folder = MUSIC_DIR / ("win_loss" if state in (GameState.WIN, GameState.LOSS) else state.value)
+        folder.mkdir(parents=True, exist_ok=True)
+        playlist = self.player.get_playlist(state)
+        if playlist is None:
+            return
+        playlist.clear()
+        added = playlist.add_directory(folder)
+        self._refresh_list(state)
+        self.statusBar().showMessage(f"Rescanned {folder.name}: {added} file(s) found")
 
     def _add_youtube(self, state: GameState) -> None:
         dialog = QWidget(self, Qt.WindowType.Dialog)
