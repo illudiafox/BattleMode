@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 from battlemode.capture.window_capture import WindowCapture, WindowInfo, list_windows
 from battlemode.music.player import MusicPlayer, PlayerState
 from battlemode.music.playlist import Playlist, Track
+from battlemode.music.store import save as save_playlists, load as load_saved_playlists
 from battlemode.music.youtube import download_audio, is_youtube_url
 from battlemode.profiles.manager import ProfileManager
 from battlemode.profiles.models import GameState
@@ -348,18 +349,22 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _load_playlists(self) -> None:
-        """Scan the music/ directories and populate playlists."""
+        """Scan music/ directories, then merge any saved tracks on top."""
         for state in [GameState.MENU, GameState.SELECTION, GameState.BATTLE, GameState.WIN, GameState.LOSS]:
-            if state in (GameState.WIN, GameState.LOSS):
-                folder = MUSIC_DIR / "win_loss"
-            else:
-                folder = MUSIC_DIR / state.value
-
+            folder = MUSIC_DIR / ("win_loss" if state in (GameState.WIN, GameState.LOSS) else state.value)
             playlist = Playlist(name=state.value)
             if folder.exists():
                 playlist.add_directory(folder)
             self.player.set_playlist(state, playlist)
+
+        # Restore any tracks added manually in previous sessions
+        load_saved_playlists(self.player._playlists)
+
+        for state in [GameState.MENU, GameState.SELECTION, GameState.BATTLE, GameState.WIN, GameState.LOSS]:
             self._refresh_list(state)
+
+    def _save_playlists(self) -> None:
+        save_playlists(self.player._playlists)
 
     def _refresh_list(self, state: GameState) -> None:
         list_widget = self._playlist_lists[state]
@@ -385,6 +390,7 @@ class MainWindow(QMainWindow):
         for path in paths:
             playlist.add_track(Track(path))
         self._refresh_list(state)
+        self._save_playlists()
         self.statusBar().showMessage(f"Added {len(paths)} file(s) to {STATE_LABELS[state]}")
 
     def _rescan_folder(self, state: GameState) -> None:
@@ -396,6 +402,7 @@ class MainWindow(QMainWindow):
         playlist.clear()
         added = playlist.add_directory(folder)
         self._refresh_list(state)
+        self._save_playlists()
         self.statusBar().showMessage(f"Rescanned {folder.name}: {added} file(s) found")
 
     def _add_youtube(self, state: GameState) -> None:
@@ -426,6 +433,7 @@ class MainWindow(QMainWindow):
                     if playlist:
                         playlist.add_track(Track(path))
                     self._refresh_list(state)
+                    self._save_playlists()
                     self.statusBar().showMessage(f"Downloaded: {path.name}")
                 except Exception as e:
                     QMessageBox.critical(dialog, "Download failed", str(e))
@@ -448,6 +456,7 @@ class MainWindow(QMainWindow):
         if playlist:
             playlist.remove_track(row)
         self._refresh_list(state)
+        self._save_playlists()
 
     def _play_from_list(self, state: GameState, item: QListWidgetItem) -> None:
         list_widget = self._playlist_lists[state]

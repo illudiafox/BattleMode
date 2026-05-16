@@ -14,7 +14,7 @@ venv/
 env/
 
 # Music library (local files — too large for git)
-music/
+/music/
 
 # Downloaded YouTube audio cache
 .cache/
