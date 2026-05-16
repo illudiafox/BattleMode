@@ -46,15 +46,23 @@ def _list_windows_macos() -> list[WindowInfo]:
             Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
             Quartz.kCGNullWindowID,
         )
+        # Get our own PID so we can exclude BattleMode's window
+        import os
+        own_pid = os.getpid()
+
         windows: list[WindowInfo] = []
         for w in raw:
             owner = w.get("kCGWindowOwnerName", "") or ""
             name = w.get("kCGWindowName", "") or ""
             layer = w.get("kCGWindowLayer", 0)
             bounds = w.get("kCGWindowBounds", {})
+            pid = w.get("kCGWindowOwnerPID", -1)
 
             # Skip menu bar, dock, overlays
             if layer != 0:
+                continue
+            # Skip our own process
+            if pid == own_pid:
                 continue
 
             width = int(bounds.get("Width", 0))

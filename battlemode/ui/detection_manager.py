@@ -7,6 +7,8 @@ from typing import Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QTimer
+from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -218,27 +220,58 @@ class DetectionManagerWidget(QWidget):
         return group
 
     def _build_test_strip(self) -> QGroupBox:
-        group = QGroupBox("Test Detection (single capture)")
-        layout = QHBoxLayout(group)
+        group = QGroupBox("OCR Live View")
+        layout = QVBoxLayout(group)
 
-        self._test_btn = QPushButton("Capture & Detect Now")
-        self._test_btn.setFixedWidth(180)
+        # Controls row
+        ctrl = QHBoxLayout()
+        self._test_btn = QPushButton("Capture Once")
+        self._test_btn.setFixedWidth(120)
         self._test_btn.clicked.connect(self._run_test)
-        layout.addWidget(self._test_btn)
+        ctrl.addWidget(self._test_btn)
 
-        layout.addWidget(QLabel("Detected state:"))
+        self._live_btn = QPushButton("Live  ▶")
+        self._live_btn.setCheckable(True)
+        self._live_btn.setFixedWidth(90)
+        self._live_btn.clicked.connect(self._toggle_live)
+        ctrl.addWidget(self._live_btn)
+
+        ctrl.addWidget(QLabel("  Detected:"))
         self._test_state_label = QLabel("—")
-        self._test_state_label.setFont(QFont("Courier New", 12, QFont.Weight.Bold))
+        self._test_state_label.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
         self._test_state_label.setFixedWidth(110)
-        layout.addWidget(self._test_state_label)
+        ctrl.addWidget(self._test_state_label)
 
-        layout.addWidget(QLabel("OCR text (truncated):"))
-        self._test_ocr_label = QLabel("—")
-        self._test_ocr_label.setFont(QFont("Courier New", 9))
-        self._test_ocr_label.setWordWrap(True)
-        layout.addWidget(self._test_ocr_label, stretch=1)
+        ctrl.addWidget(QLabel("Keywords hit:"))
+        self._test_kw_label = QLabel("—")
+        self._test_kw_label.setFont(QFont("Courier New", 10))
+        self._test_kw_label.setWordWrap(True)
+        ctrl.addWidget(self._test_kw_label, stretch=1)
+        layout.addLayout(ctrl)
+
+        # Full OCR text viewer — matched keywords highlighted in yellow
+        self._ocr_view = QTextEdit()
+        self._ocr_view.setReadOnly(True)
+        self._ocr_view.setFont(QFont("Courier New", 9))
+        self._ocr_view.setPlaceholderText("OCR output will appear here after capture…")
+        self._ocr_view.setMaximumHeight(160)
+        layout.addWidget(self._ocr_view)
+
+        # Live-refresh timer
+        self._live_timer = QTimer(self)
+        self._live_timer.setInterval(2500)
+        self._live_timer.timeout.connect(self._run_test)
 
         return group
+
+    def _toggle_live(self, checked: bool) -> None:
+        if checked:
+            self._live_btn.setText("Live  ⏹")
+            self._live_timer.start()
+            self._run_test()
+        else:
+            self._live_btn.setText("Live  ▶")
+            self._live_timer.stop()
 
     # ------------------------------------------------------------------ #
     #  Profile loading                                                      #
@@ -374,6 +407,27 @@ class DetectionManagerWidget(QWidget):
         self._refresh_rule_list()
         self._rule_list.setCurrentRow(self._selected_index)
 
+    def _set_ocr_text(self, text: str, keywords: list[str]) -> None:
+        """Populate the OCR viewer, highlighting any keyword found in the text."""
+        self._ocr_view.setPlainText(text)
+        if not keywords:
+            return
+
+        highlight_fmt = QTextCharFormat()
+        highlight_fmt.setBackground(QColor("#f0c040"))
+        highlight_fmt.setForeground(QColor("#000000"))
+
+        doc = self._ocr_view.document()
+        cursor = QTextCursor(doc)
+
+        for kw in set(keywords):
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            while True:
+                cursor = doc.find(kw, cursor)
+                if cursor.isNull():
+                    break
+                cursor.mergeCharFormat(highlight_fmt)
+
     def _toggle_region_fields(self, state: int) -> None:
         self._region_row.setEnabled(bool(state))
 
@@ -423,23 +477,33 @@ class DetectionManagerWidget(QWidget):
 
                 result = detector.detect_result(frame)
                 raw_text = _extract_text(frame)
-                preview = raw_text.replace("\n", " ").strip()[:120]
+
+                # Collect all keywords from all rules for highlighting
+                all_keywords = []
+                if self._profile:
+                    for rule in self._profile.detection_rules:
+                        if rule.enabled and rule.ocr_text:
+                            all_keywords.extend(rule.ocr_text)
 
                 if result:
+                    self._test_state_label.setText(result.state.value.upper())
                     kw_info = (
-                        f"{len(result.matched_keywords)}/{result.total_keywords} matched: "
+                        f"{len(result.matched_keywords)}/{result.total_keywords}: "
                         + ", ".join(result.matched_keywords)
                     )
-                    self._test_state_label.setText(result.state.value.upper())
-                    self._test_ocr_label.setText(f"{kw_info}\n\nRAW: {preview or '(empty)'}")
+                    self._test_kw_label.setText(kw_info)
                 else:
                     self._test_state_label.setText("UNKNOWN")
-                    self._test_ocr_label.setText(f"No rule matched\n\nRAW: {preview or '(empty)'}")
+                    self._test_kw_label.setText("no rule matched")
+
+                self._set_ocr_text(raw_text or "(no text returned)", all_keywords)
+
             except Exception as e:
                 self._test_state_label.setText("ERROR")
-                self._test_ocr_label.setText(str(e))
+                self._test_kw_label.setText(str(e))
+                self._ocr_view.setPlainText(str(e))
             finally:
                 self._test_btn.setEnabled(True)
-                self._test_btn.setText("Capture & Detect Now")
+                self._test_btn.setText("Capture Once")
 
         threading.Thread(target=worker, daemon=True).start()
