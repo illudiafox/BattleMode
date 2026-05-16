@@ -67,6 +67,9 @@ class PlayerSignals(QObject):
 
 
 class MainWindow(QMainWindow):
+    # Cross-thread signal — detection loop emits this, main thread handles it
+    _detected = pyqtSignal(object, object)   # (GameState, DetectionResult | None)
+
     def __init__(self, player: MusicPlayer, profile_manager: ProfileManager) -> None:
         super().__init__()
         self.player = player
@@ -77,6 +80,9 @@ class MainWindow(QMainWindow):
         self._stop_event = threading.Event()
 
         self._capture_window: WindowInfo | None = None   # None = full screen
+
+        # Route cross-thread state updates safely to the main thread
+        self._detected.connect(self._on_detected)
 
         self.setWindowTitle("BattleMode")
         self.setMinimumSize(900, 600)
@@ -606,7 +612,8 @@ class MainWindow(QMainWindow):
                         elif now - pending_since >= delay:
                             log.info("Triggered → %s", result.summary())
                             self.player.transition_to(state)
-                            self._set_state(state, result)
+                            # Emit signal — Qt delivers this on the main thread
+                            self._detected.emit(state, result)
                             last = state
                             pending_state = None
 
@@ -617,6 +624,10 @@ class MainWindow(QMainWindow):
                 log.info("Detection loop stopped")
 
         threading.Thread(target=loop, daemon=True).start()
+
+    def _on_detected(self, state: GameState, result) -> None:
+        """Slot — always runs on main thread via Qt signal dispatch."""
+        self._set_state(state, result)
 
     def _on_profile_changed(self, name: str) -> None:
         self.statusBar().showMessage(f"Profile: {name}")
