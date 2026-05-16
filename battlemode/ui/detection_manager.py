@@ -421,12 +421,20 @@ class DetectionManagerWidget(QWidget):
                 with cap:
                     frame = cap.grab()
 
-                state = detector.detect(frame)
+                result = detector.detect_result(frame)
                 raw_text = _extract_text(frame)
                 preview = raw_text.replace("\n", " ").strip()[:120]
 
-                self._test_state_label.setText(state.value.upper())
-                self._test_ocr_label.setText(preview or "(no text found)")
+                if result:
+                    kw_info = (
+                        f"{len(result.matched_keywords)}/{result.total_keywords} matched: "
+                        + ", ".join(result.matched_keywords)
+                    )
+                    self._test_state_label.setText(result.state.value.upper())
+                    self._test_ocr_label.setText(f"{kw_info}\n\nRAW: {preview or '(empty)'}")
+                else:
+                    self._test_state_label.setText("UNKNOWN")
+                    self._test_ocr_label.setText(f"No rule matched\n\nRAW: {preview or '(empty)'}")
             except Exception as e:
                 self._test_state_label.setText("ERROR")
                 self._test_ocr_label.setText(str(e))

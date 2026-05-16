@@ -300,6 +300,15 @@ class MainWindow(QMainWindow):
         layout.addSpacing(8)
         layout.addWidget(QLabel("Track:"))
         layout.addWidget(self._np_track)
+        layout.addSpacing(8)
+
+        layout.addWidget(QLabel("Last detection trigger:"))
+        self._np_keywords = QLabel("—")
+        self._np_keywords.setFont(QFont("Courier New", 9))
+        self._np_keywords.setWordWrap(True)
+        self._np_keywords.setStyleSheet("color: #aaa;")
+        layout.addWidget(self._np_keywords)
+
         layout.addStretch()
 
         # Repeat / shuffle toggles for active phase
@@ -488,12 +497,22 @@ class MainWindow(QMainWindow):
     #  State / detection                                                    #
     # ------------------------------------------------------------------ #
 
-    def _set_state(self, state: GameState) -> None:
+    def _set_state(self, state: GameState, result=None) -> None:
         self._current_state = state
         color = STATE_COLORS.get(state, "#888")
         self._state_label.setText(STATE_LABELS.get(state, "?"))
         self._state_label.setStyleSheet(f"background: {color}; color: white; border-radius: 6px;")
         self._np_state.setText(STATE_LABELS.get(state, "?"))
+
+        if result is not None:
+            kw_text = (
+                f"{len(result.matched_keywords)}/{result.total_keywords} matched: "
+                + ", ".join(result.matched_keywords)
+            )
+            self._np_keywords.setText(kw_text)
+            self.statusBar().showMessage(
+                f"→ {state.value.upper()}  |  {kw_text}"
+            )
 
         # Sync checkboxes to the active playlist's settings
         playlist = self.player.get_playlist(state)
@@ -529,7 +548,7 @@ class MainWindow(QMainWindow):
     def _start_detection_thread(self) -> None:
         """Lazy import to avoid loading CV/Tesseract until needed."""
         from battlemode.capture.screen_capture import ScreenCapture
-        from battlemode.vision.state_detector import StateDetector
+        from battlemode.vision.state_detector import StateDetector, DetectionResult
 
         profile_id = self._profile_combo.currentText()
         try:
@@ -568,14 +587,14 @@ class MainWindow(QMainWindow):
                             continue
 
                         try:
-                            rule = detector.detect_rule(frame)
+                            result = detector.detect_result(frame)
                         except Exception:
                             log.exception("Detection failed")
                             time.sleep(2.0)
                             continue
 
-                        state = rule.state if rule else GameState.UNKNOWN
-                        delay = rule.trigger_delay if rule else 0.0
+                        state = result.state if result else GameState.UNKNOWN
+                        delay = result.trigger_delay if result else 0.0
                         now = time.time()
 
                         if state == GameState.UNKNOWN or state == last:
@@ -585,10 +604,9 @@ class MainWindow(QMainWindow):
                             pending_state = state
                             pending_since = now
                         elif now - pending_since >= delay:
-                            log.info("Committing transition → %s (held %.1fs)",
-                                     state.value, now - pending_since)
+                            log.info("Triggered → %s", result.summary())
                             self.player.transition_to(state)
-                            self._set_state(state)
+                            self._set_state(state, result)
                             last = state
                             pending_state = None
 
