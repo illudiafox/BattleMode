@@ -198,7 +198,10 @@ class MainWindow(QMainWindow):
 
     def _refresh_window_list(self) -> None:
         mode = self._source_mode_combo.currentText()
-        self._window_combo.currentIndexChanged.disconnect()
+        try:
+            self._window_combo.currentIndexChanged.disconnect()
+        except TypeError:
+            pass  # no connections yet on first call
         self._window_combo.clear()
 
         all_windows = list_windows()
