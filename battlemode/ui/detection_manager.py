@@ -189,13 +189,13 @@ class DetectionManagerWidget(QWidget):
 
         layout.addWidget(QLabel("Detected state:"))
         self._test_state_label = QLabel("—")
-        self._test_state_label.setFont(QFont("monospace", 12, QFont.Weight.Bold))
+        self._test_state_label.setFont(QFont("Courier New", 12, QFont.Weight.Bold))
         self._test_state_label.setFixedWidth(110)
         layout.addWidget(self._test_state_label)
 
         layout.addWidget(QLabel("OCR text (truncated):"))
         self._test_ocr_label = QLabel("—")
-        self._test_ocr_label.setFont(QFont("monospace", 9))
+        self._test_ocr_label.setFont(QFont("Courier New", 9))
         self._test_ocr_label.setWordWrap(True)
         layout.addWidget(self._test_ocr_label, stretch=1)
 

@@ -133,7 +133,7 @@ class MainWindow(QMainWindow):
         # State badge
         self._state_label = QLabel("UNKNOWN")
         self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._state_label.setFont(QFont("monospace", 14, QFont.Weight.Bold))
+        self._state_label.setFont(QFont("Courier New", 14, QFont.Weight.Bold))
         self._state_label.setFixedWidth(130)
         self._state_label.setFixedHeight(36)
         self._state_label.setStyleSheet("background: #888; color: white; border-radius: 6px;")
@@ -260,7 +260,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(group)
 
         self._np_state = QLabel("—")
-        self._np_state.setFont(QFont("monospace", 10))
+        self._np_state.setFont(QFont("Courier New", 10))
         self._np_state.setWordWrap(True)
 
         self._np_track = QLabel("No track playing")
