@@ -6,29 +6,38 @@
   "detection_rules": [
     {
       "state": "battle",
-      "enabled": true,
+      "enabled": false,
+      "trigger_delay": 0.0,
       "ocr_text": [
-        "fight",
-        "bag",
-        "pokemon",
-        "run",
-        "hp"
+        "ranked battles",
+        "single battle",
+        "vs"
       ],
-      "ocr_region": null,
+      "ocr_region": [
+        762,
+        156,
+        198,
+        46
+      ],
       "min_keywords": 1,
       "template_path": null,
-      "template_threshold": 0.85,
+      "template_threshold": 0.4,
       "priority": 10
     },
     {
       "state": "selection",
       "enabled": true,
+      "trigger_delay": 0.0,
       "ocr_text": [
-        "choose your",
-        "select pokemon",
-        "pick your team"
+        "an opponent has been found",
+        "send into battle"
       ],
-      "ocr_region": null,
+      "ocr_region": [
+        711,
+        293,
+        152,
+        56
+      ],
       "min_keywords": 1,
       "template_path": null,
       "template_threshold": 0.85,
@@ -37,10 +46,9 @@
     {
       "state": "win",
       "enabled": true,
+      "trigger_delay": 0.0,
       "ocr_text": [
-        "you win",
-        "victory",
-        "winner"
+        "you defeated"
       ],
       "ocr_region": null,
       "min_keywords": 1,
@@ -51,11 +59,9 @@
     {
       "state": "loss",
       "enabled": true,
+      "trigger_delay": 0.0,
       "ocr_text": [
-        "you lose",
-        "defeated",
-        "blacked out",
-        "whited out"
+        "you lost to"
       ],
       "ocr_region": null,
       "min_keywords": 1,
@@ -66,6 +72,7 @@
     {
       "state": "menu",
       "enabled": true,
+      "trigger_delay": 0.0,
       "ocr_text": [
         "battle",
         "recruit",
@@ -76,10 +83,32 @@
         "mailbox"
       ],
       "ocr_region": null,
-      "min_keywords": 1,
+      "min_keywords": 4,
       "template_path": null,
       "template_threshold": 0.85,
       "priority": 1
+    },
+    {
+      "state": "menu",
+      "enabled": true,
+      "trigger_delay": 0.0,
+      "ocr_text": [],
+      "ocr_region": null,
+      "min_keywords": 1,
+      "template_path": "/Users/illudiafox/Github Projects/BattleMode/user_data/templates/capture_20260515_221841.png",
+      "template_threshold": 0.65,
+      "priority": 7
+    },
+    {
+      "state": "battle",
+      "enabled": true,
+      "trigger_delay": 0.0,
+      "ocr_text": [],
+      "ocr_region": null,
+      "min_keywords": 1,
+      "template_path": "/Users/illudiafox/Github Projects/BattleMode/user_data/templates/capture_20260515_220435.png",
+      "template_threshold": 0.42,
+      "priority": 10
     }
   ],
   "phase_config": {

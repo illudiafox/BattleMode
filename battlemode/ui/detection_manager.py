@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import threading
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
-from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -24,6 +22,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QSplitter,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -80,9 +79,6 @@ class DetectionManagerWidget(QWidget):
         splitter.setSizes([300, 500])
         root.addWidget(splitter, stretch=1)
 
-        # OCR test strip
-        root.addWidget(self._build_test_strip())
-
         # Load initial profile now that all widgets exist
         if self._initial_profile:
             self._load_profile(self._initial_profile)
@@ -129,75 +125,103 @@ class DetectionManagerWidget(QWidget):
 
     def _build_edit_panel(self) -> QWidget:
         group = QGroupBox("Edit Rule")
-        form = QFormLayout(group)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form.setSpacing(10)
+        root = QVBoxLayout(group)
+        root.setSpacing(8)
 
-        # Enabled
+        # --- Top: fields common to all rule types ---
+        top_form = QFormLayout()
+        top_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        top_form.setSpacing(8)
+
         self._enabled_cb = QCheckBox("Rule enabled")
         self._enabled_cb.setChecked(True)
-        form.addRow(self._enabled_cb)
+        top_form.addRow(self._enabled_cb)
 
-        # State
         self._state_combo = QComboBox()
         for label in STATE_LABELS.values():
             self._state_combo.addItem(label)
-        form.addRow("Game State:", self._state_combo)
+        top_form.addRow("Game State:", self._state_combo)
 
-        # Priority
         self._priority_spin = QSpinBox()
         self._priority_spin.setRange(0, 100)
-        self._priority_spin.setToolTip("Higher = checked first. Use to break ties between rules.")
-        form.addRow("Priority:", self._priority_spin)
+        self._priority_spin.setToolTip("Higher = checked first.")
+        top_form.addRow("Priority:", self._priority_spin)
 
-        # Trigger delay
         delay_row = QWidget()
-        delay_layout = QHBoxLayout(delay_row)
-        delay_layout.setContentsMargins(0, 0, 0, 0)
+        dl = QHBoxLayout(delay_row)
+        dl.setContentsMargins(0, 0, 0, 0)
         self._delay_spin = QDoubleSpinBox()
         self._delay_spin.setRange(0.0, 60.0)
         self._delay_spin.setSingleStep(0.5)
         self._delay_spin.setDecimals(1)
-        self._delay_spin.setValue(0.0)
         self._delay_spin.setFixedWidth(70)
-        delay_layout.addWidget(self._delay_spin)
-        delay_layout.addWidget(QLabel("seconds — state must be held this long before switching"))
-        delay_layout.addStretch()
-        form.addRow("Trigger delay:", delay_row)
+        dl.addWidget(self._delay_spin)
+        dl.addWidget(QLabel("s hold before switching"))
+        dl.addStretch()
+        top_form.addRow("Trigger delay:", delay_row)
 
-        # OCR keywords
-        kw_hint = QLabel("One keyword per line. State triggers when at least N keywords are found.")
-        kw_hint.setWordWrap(True)
-        kw_hint.setStyleSheet("color: #888; font-size: 11px;")
-        form.addRow(kw_hint)
+        root.addLayout(top_form)
+
+        # --- Tabs: OCR | Template ---
+        tabs = QTabWidget()
+        tabs.addTab(self._build_ocr_tab(), "OCR")
+        tabs.addTab(self._build_template_tab(), "Template")
+        root.addWidget(tabs, stretch=1)
+
+        # --- Apply ---
+        apply_btn = QPushButton("Apply Changes to Rule")
+        apply_btn.clicked.connect(self._apply_rule_edits)
+        root.addWidget(apply_btn)
+
+        return group
+
+    def _build_ocr_tab(self) -> QWidget:
+        w = QWidget()
+        form = QFormLayout(w)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setSpacing(8)
+        form.setContentsMargins(8, 8, 8, 8)
+
+        hint = QLabel("One keyword per line. Triggers when ≥ N keywords found in OCR text.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        form.addRow(hint)
 
         self._keywords_edit = QTextEdit()
         self._keywords_edit.setPlaceholderText("fight\nbag\nuse\nhp\nrun")
-        self._keywords_edit.setMaximumHeight(130)
+        self._keywords_edit.setMaximumHeight(120)
         form.addRow("Keywords:", self._keywords_edit)
 
-        # Min keywords threshold
         min_kw_row = QWidget()
-        min_kw_layout = QHBoxLayout(min_kw_row)
-        min_kw_layout.setContentsMargins(0, 0, 0, 0)
+        mkl = QHBoxLayout(min_kw_row)
+        mkl.setContentsMargins(0, 0, 0, 0)
         self._min_keywords_spin = QSpinBox()
         self._min_keywords_spin.setRange(1, 50)
         self._min_keywords_spin.setValue(1)
         self._min_keywords_spin.setFixedWidth(60)
-        min_kw_layout.addWidget(self._min_keywords_spin)
-        min_kw_layout.addWidget(QLabel("keyword(s) must match to trigger this state"))
-        min_kw_layout.addStretch()
+        mkl.addWidget(self._min_keywords_spin)
+        mkl.addWidget(QLabel("keyword(s) must match"))
+        mkl.addStretch()
         form.addRow("Min matches:", min_kw_row)
 
-        # Region
-        region_hint = QLabel("Leave all zeros to scan the full screen. Use x/y/w/h to limit to a region (pixels).")
+        region_hint = QLabel("Leave blank for full screen, or pick a region to speed up OCR.")
         region_hint.setWordWrap(True)
         region_hint.setStyleSheet("color: #888; font-size: 11px;")
         form.addRow(region_hint)
 
+        use_region_row = QWidget()
+        url = QHBoxLayout(use_region_row)
+        url.setContentsMargins(0, 0, 0, 0)
         self._use_region_cb = QCheckBox("Limit to screen region")
         self._use_region_cb.stateChanged.connect(self._toggle_region_fields)
-        form.addRow(self._use_region_cb)
+        url.addWidget(self._use_region_cb)
+        pick_btn = QPushButton("Pick Region…")
+        pick_btn.setFixedWidth(110)
+        pick_btn.setToolTip("Capture the current frame and drag to select a region")
+        pick_btn.clicked.connect(self._pick_region)
+        url.addWidget(pick_btn)
+        url.addStretch()
+        form.addRow(use_region_row)
 
         region_row = QWidget()
         rl = QHBoxLayout(region_row)
@@ -212,66 +236,57 @@ class DetectionManagerWidget(QWidget):
         self._region_row.setEnabled(False)
         form.addRow("Region (px):", region_row)
 
-        # Apply button
-        apply_btn = QPushButton("Apply Changes to Rule")
-        apply_btn.clicked.connect(self._apply_rule_edits)
-        form.addRow(apply_btn)
+        return w
 
-        return group
+    def _build_template_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
-    def _build_test_strip(self) -> QGroupBox:
-        group = QGroupBox("OCR Live View")
-        layout = QVBoxLayout(group)
+        hint = QLabel(
+            "Add one or more reference images. The rule fires if ANY template matches "
+            "at or above the confidence threshold. Use Ctrl+L to snap a quick capture."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(hint)
 
-        # Controls row
-        ctrl = QHBoxLayout()
-        self._test_btn = QPushButton("Capture Once")
-        self._test_btn.setFixedWidth(120)
-        self._test_btn.clicked.connect(self._run_test)
-        ctrl.addWidget(self._test_btn)
+        self._tmpl_list = QListWidget()
+        self._tmpl_list.setToolTip("Double-click an entry to see its full path")
+        layout.addWidget(self._tmpl_list, stretch=1)
 
-        self._live_btn = QPushButton("Live  ▶")
-        self._live_btn.setCheckable(True)
-        self._live_btn.setFixedWidth(90)
-        self._live_btn.clicked.connect(self._toggle_live)
-        ctrl.addWidget(self._live_btn)
+        btn_row = QHBoxLayout()
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(self._browse_template)
+        btn_row.addWidget(browse_btn)
 
-        ctrl.addWidget(QLabel("  Detected:"))
-        self._test_state_label = QLabel("—")
-        self._test_state_label.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
-        self._test_state_label.setFixedWidth(110)
-        ctrl.addWidget(self._test_state_label)
+        capture_btn = QPushButton("Capture")
+        capture_btn.setToolTip("Grab a screenshot now and add it as a template")
+        capture_btn.clicked.connect(self._capture_template)
+        btn_row.addWidget(capture_btn)
 
-        ctrl.addWidget(QLabel("Keywords hit:"))
-        self._test_kw_label = QLabel("—")
-        self._test_kw_label.setFont(QFont("Courier New", 10))
-        self._test_kw_label.setWordWrap(True)
-        ctrl.addWidget(self._test_kw_label, stretch=1)
-        layout.addLayout(ctrl)
+        remove_btn = QPushButton("Remove")
+        remove_btn.setToolTip("Remove selected template from this rule")
+        remove_btn.clicked.connect(self._remove_template)
+        btn_row.addWidget(remove_btn)
+        layout.addLayout(btn_row)
 
-        # Full OCR text viewer — matched keywords highlighted in yellow
-        self._ocr_view = QTextEdit()
-        self._ocr_view.setReadOnly(True)
-        self._ocr_view.setFont(QFont("Courier New", 9))
-        self._ocr_view.setPlaceholderText("OCR output will appear here after capture…")
-        self._ocr_view.setMaximumHeight(160)
-        layout.addWidget(self._ocr_view)
+        thresh_row = QWidget()
+        tl = QHBoxLayout(thresh_row)
+        tl.setContentsMargins(0, 0, 0, 0)
+        self._tmpl_threshold_spin = QDoubleSpinBox()
+        self._tmpl_threshold_spin.setRange(0.1, 1.0)
+        self._tmpl_threshold_spin.setSingleStep(0.05)
+        self._tmpl_threshold_spin.setDecimals(2)
+        self._tmpl_threshold_spin.setValue(0.85)
+        self._tmpl_threshold_spin.setFixedWidth(70)
+        tl.addWidget(self._tmpl_threshold_spin)
+        tl.addWidget(QLabel("confidence threshold (shared across all templates)"))
+        tl.addStretch()
+        layout.addWidget(thresh_row)
 
-        # Live-refresh timer
-        self._live_timer = QTimer(self)
-        self._live_timer.setInterval(2500)
-        self._live_timer.timeout.connect(self._run_test)
-
-        return group
-
-    def _toggle_live(self, checked: bool) -> None:
-        if checked:
-            self._live_btn.setText("Live  ⏹")
-            self._live_timer.start()
-            self._run_test()
-        else:
-            self._live_btn.setText("Live  ▶")
-            self._live_timer.stop()
+        return w
 
     # ------------------------------------------------------------------ #
     #  Profile loading                                                      #
@@ -357,6 +372,11 @@ class DetectionManagerWidget(QWidget):
             for spin in [self._rx, self._ry, self._rw, self._rh]:
                 spin.setValue(0)
 
+        self._tmpl_list.clear()
+        for path in rule.template_paths:
+            self._tmpl_list_add(path)
+        self._tmpl_threshold_spin.setValue(rule.template_threshold)
+
     # ------------------------------------------------------------------ #
     #  Rule editing                                                         #
     # ------------------------------------------------------------------ #
@@ -404,32 +424,115 @@ class DetectionManagerWidget(QWidget):
         else:
             rule.ocr_region = None
 
+        rule.template_paths = [
+            self._tmpl_list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self._tmpl_list.count())
+        ]
+        rule.template_threshold = self._tmpl_threshold_spin.value()
+
         self._refresh_rule_list()
         self._rule_list.setCurrentRow(self._selected_index)
 
-    def _set_ocr_text(self, text: str, keywords: list[str]) -> None:
-        """Populate the OCR viewer, highlighting any keyword found in the text."""
-        self._ocr_view.setPlainText(text)
-        if not keywords:
-            return
-
-        highlight_fmt = QTextCharFormat()
-        highlight_fmt.setBackground(QColor("#f0c040"))
-        highlight_fmt.setForeground(QColor("#000000"))
-
-        doc = self._ocr_view.document()
-        cursor = QTextCursor(doc)
-
-        for kw in set(keywords):
-            cursor.movePosition(QTextCursor.MoveOperation.Start)
-            while True:
-                cursor = doc.find(kw, cursor)
-                if cursor.isNull():
-                    break
-                cursor.mergeCharFormat(highlight_fmt)
-
     def _toggle_region_fields(self, state: int) -> None:
         self._region_row.setEnabled(bool(state))
+
+    def _pick_region(self) -> None:
+        """Capture a frame and open the visual region picker."""
+        capture_window = getattr(self, "_capture_window", None)
+        try:
+            if capture_window:
+                from battlemode.capture.window_capture import WindowCapture
+                cap = WindowCapture(capture_window)
+            else:
+                from battlemode.capture.screen_capture import ScreenCapture
+                cap = ScreenCapture()
+            with cap:
+                frame = cap.grab()
+        except Exception as e:
+            QMessageBox.critical(self, "Capture failed", str(e))
+            return
+
+        from battlemode.ui.region_picker import RegionPickerDialog
+        dlg = RegionPickerDialog(frame, self)
+        if dlg.exec():
+            region = dlg.region()
+            if region:
+                x, y, w, h = region
+                self._use_region_cb.setChecked(True)
+                self._rx.setValue(x)
+                self._ry.setValue(y)
+                self._rw.setValue(w)
+                self._rh.setValue(h)
+
+    def _tmpl_list_add(self, path: str) -> None:
+        """Add a path to the template list widget (deduplicates)."""
+        existing = [
+            self._tmpl_list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self._tmpl_list.count())
+        ]
+        if path in existing:
+            return
+        item = QListWidgetItem(Path(path).name)
+        item.setData(Qt.ItemDataRole.UserRole, path)
+        item.setToolTip(path)
+        self._tmpl_list.addItem(item)
+
+    def add_template_path(self, path: str) -> None:
+        """Public — called by MainWindow after a Ctrl+L capture."""
+        self._tmpl_list_add(path)
+
+    def _browse_template(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select Template Image(s)", "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.tiff)"
+        )
+        for path in paths:
+            self._tmpl_list_add(path)
+
+    def _remove_template(self) -> None:
+        row = self._tmpl_list.currentRow()
+        if row >= 0:
+            self._tmpl_list.takeItem(row)
+
+    def _capture_template(self) -> None:
+        """Grab a frame right now and add it to the template list."""
+        if not self._profile or self._selected_index < 0:
+            QMessageBox.warning(self, "No rule selected", "Select a rule first.")
+            return
+
+        capture_window = getattr(self, "_capture_window", None)
+        try:
+            if capture_window:
+                from battlemode.capture.window_capture import WindowCapture
+                cap = WindowCapture(capture_window)
+            else:
+                from battlemode.capture.screen_capture import ScreenCapture
+                cap = ScreenCapture()
+            with cap:
+                frame = cap.grab()
+        except Exception as e:
+            QMessageBox.critical(self, "Capture failed", str(e))
+            return
+
+        import cv2
+        rules = sorted(self._profile.detection_rules, key=lambda r: -r.priority)
+        rule = rules[self._selected_index]
+
+        tmpl_dir = Path("user_data/templates")
+        tmpl_dir.mkdir(parents=True, exist_ok=True)
+
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{self._profile.game_id}_{rule.state.value}_{ts}.png"
+        path = str(tmpl_dir / filename)
+
+        cv2.imwrite(path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        self._tmpl_list_add(path)
+        QMessageBox.information(
+            self, "Template saved",
+            f"Saved {frame.shape[1]}×{frame.shape[0]} image.\n\nPath: {path}\n\n"
+            "Click 'Apply Changes to Rule' to attach it."
+        )
 
     # ------------------------------------------------------------------ #
     #  Save                                                                 #
@@ -442,68 +545,6 @@ class DetectionManagerWidget(QWidget):
         self.profile_saved.emit(self._profile.game_id)
         QMessageBox.information(self, "Saved", f"Profile '{self._profile.name}' saved.")
 
-    # ------------------------------------------------------------------ #
-    #  Test detection                                                       #
-    # ------------------------------------------------------------------ #
-
     def set_capture_window(self, window) -> None:
         """Called by MainWindow to pass the selected capture window (or None = full screen)."""
         self._capture_window = window
-
-    def _run_test(self) -> None:
-        if not self._profile:
-            QMessageBox.warning(self, "No profile", "Load a profile first.")
-            return
-
-        self._test_btn.setEnabled(False)
-        self._test_btn.setText("Capturing…")
-        capture_window = getattr(self, "_capture_window", None)
-
-        def worker():
-            try:
-                from battlemode.vision.state_detector import StateDetector, _extract_text
-
-                detector = StateDetector(self._profile)
-
-                if capture_window:
-                    from battlemode.capture.window_capture import WindowCapture
-                    cap = WindowCapture(capture_window)
-                else:
-                    from battlemode.capture.screen_capture import ScreenCapture
-                    cap = ScreenCapture()
-
-                with cap:
-                    frame = cap.grab()
-
-                result = detector.detect_result(frame)
-                raw_text = _extract_text(frame)
-
-                # Collect all keywords from all rules for highlighting
-                all_keywords = []
-                if self._profile:
-                    for rule in self._profile.detection_rules:
-                        if rule.enabled and rule.ocr_text:
-                            all_keywords.extend(rule.ocr_text)
-
-                if result:
-                    self._test_state_label.setText(result.state.value.upper())
-                    kw_info = (
-                        f"{len(result.matched_keywords)}/{result.total_keywords}: "
-                        + ", ".join(result.matched_keywords)
-                    )
-                    self._test_kw_label.setText(kw_info)
-                else:
-                    self._test_state_label.setText("UNKNOWN")
-                    self._test_kw_label.setText("no rule matched")
-
-                self._set_ocr_text(raw_text or "(no text returned)", all_keywords)
-
-            except Exception as e:
-                self._test_state_label.setText("ERROR")
-                self._test_kw_label.setText(str(e))
-                self._ocr_view.setPlainText(str(e))
-            finally:
-                self._test_btn.setEnabled(True)
-                self._test_btn.setText("Capture Once")
-
-        threading.Thread(target=worker, daemon=True).start()

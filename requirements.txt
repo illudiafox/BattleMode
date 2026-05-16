@@ -24,3 +24,7 @@ numpy>=1.26.0
 # macOS: window enumeration without accessibility permissions
 # Linux equivalent: install wmctrl via apt
 pyobjc-framework-Quartz>=9.0; sys_platform == "darwin"
+
+# Global hotkeys (works even when app window is not focused)
+# macOS: requires Accessibility permission (System Settings → Privacy → Accessibility)
+pynput>=1.7.0

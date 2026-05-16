@@ -39,7 +39,8 @@ class MusicPlayer:
         self._phase_configs: dict[GameState, PhaseConfig] = {}
         self._state = PlayerState.STOPPED
         self._volume: int = 80
-        self._repeat_track: bool = False
+        self._repeat_track: bool = True
+        self._been_to: set[GameState] = set()   # states visited at least once
         self._lock = threading.Lock()
 
     # --- VLC lazy init ---
@@ -91,12 +92,17 @@ class MusicPlayer:
             self._active_state = state
             return
 
+        first_visit = state not in self._been_to
+        self._been_to.add(state)
         self._active_state = state
         self._repeat_track = config.repeat_track
         playlist.repeat = config.repeat
         playlist.shuffle = config.shuffle
 
-        track = playlist.current()
+        if first_visit:
+            track = playlist.current()
+        else:
+            track = playlist.advance() or playlist.current()
         if track:
             self._play_track(track)
 
@@ -190,7 +196,14 @@ class MusicPlayer:
             log.exception("Failed to play track: %s", track.path)
 
     def _on_track_end(self, event) -> None:
-        """Called by VLC event thread when current track finishes."""
+        """Called by VLC event thread — hand off immediately so the callback returns.
+
+        Calling media_player.play() from within a VLC event callback is unreliable
+        (libvlc can silently drop the call). A fresh thread sidesteps this.
+        """
+        threading.Thread(target=self._handle_track_end, daemon=True).start()
+
+    def _handle_track_end(self) -> None:
         log.debug("Track ended (repeat_track=%s)", self._repeat_track)
         if self._repeat_track:
             playlist = self._active_playlist()

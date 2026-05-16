@@ -7,9 +7,10 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
+    QDoubleSpinBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -39,6 +40,7 @@ from battlemode.music.youtube import download_audio, is_youtube_url
 from battlemode.profiles.manager import ProfileManager
 from battlemode.profiles.models import GameState
 from battlemode.ui.detection_manager import DetectionManagerWidget
+from battlemode.ui.ocr_live_view import OcrLiveViewWidget
 
 log = _bm_logger.get("ui")
 
@@ -61,6 +63,56 @@ STATE_LABELS = {
 }
 
 
+class _CapturePreviewWindow(QWidget):
+    """Floating window that shows a just-captured screenshot."""
+
+    def __init__(self, frame, path: str, parent=None) -> None:
+        super().__init__(
+            parent,
+            Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint,
+        )
+        self.setWindowTitle(f"Capture — {Path(path).name}")
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        import cv2
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(img)
+
+        # Scale to fit within 1000×700 while keeping aspect ratio
+        pixmap = pixmap.scaled(
+            1000, 700,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        label = QLabel()
+        label.setPixmap(pixmap)
+        layout.addWidget(label)
+
+        path_label = QLabel(path)
+        path_label.setStyleSheet("color: #888; font-size: 10px;")
+        path_label.setWordWrap(True)
+        layout.addWidget(path_label)
+
+        close_btn = QPushButton("Close  [Esc]")
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn)
+
+        self.adjustSize()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(event)
+
+
 class PlayerSignals(QObject):
     state_changed = pyqtSignal(str)   # GameState value
     track_changed = pyqtSignal(str)   # track title
@@ -69,6 +121,8 @@ class PlayerSignals(QObject):
 class MainWindow(QMainWindow):
     # Cross-thread signal — detection loop emits this, main thread handles it
     _detected = pyqtSignal(object, object)   # (GameState, DetectionResult | None)
+    _hotkey_triggered = pyqtSignal()          # global Ctrl+L → main thread
+    _frame_ready = pyqtSignal(object, object) # (frame, DetectionResult | None) — live feed
 
     def __init__(self, player: MusicPlayer, profile_manager: ProfileManager) -> None:
         super().__init__()
@@ -80,13 +134,17 @@ class MainWindow(QMainWindow):
         self._stop_event = threading.Event()
 
         self._capture_window: WindowInfo | None = None   # None = full screen
+        self._detection_interval: float = 0.2            # seconds between frames
 
         # Route cross-thread state updates safely to the main thread
         self._detected.connect(self._on_detected)
+        self._hotkey_triggered.connect(self._quick_capture)
 
         self.setWindowTitle("BattleMode")
         self.setMinimumSize(900, 600)
         self._build_ui()
+        self._frame_ready.connect(self._ocr_live_view.push_detection_frame)
+        self._frame_ready.connect(self._update_tmpl_status)
         self._load_playlists()
 
         # Poll player for track changes
@@ -130,6 +188,15 @@ class MainWindow(QMainWindow):
         self._detection_manager.profile_saved.connect(self._on_detection_profile_saved)
         self._main_tabs.addTab(self._detection_manager, "Detection Manager")
 
+        # --- OCR Live View tab ---
+        self._ocr_live_view = OcrLiveViewWidget(self.profile_manager)
+        self._main_tabs.addTab(self._ocr_live_view, "OCR Live View")
+
+        # Sync initial profile into the live view
+        initial_profile = self._profile_combo.currentText()
+        if initial_profile:
+            self._ocr_live_view.load_profile(initial_profile)
+
         root.addWidget(self._main_tabs, stretch=1)
 
         # Bottom: transport controls + volume (always visible)
@@ -137,6 +204,12 @@ class MainWindow(QMainWindow):
 
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Ready")
+        self._tmpl_status = QLabel("")
+        self._tmpl_status.setStyleSheet("color: #aaa; font-size: 11px; padding-right: 6px;")
+        self.statusBar().addPermanentWidget(self._tmpl_status)
+
+        # Global Ctrl+L hotkey — fires even when app window is not focused
+        self._start_global_hotkey()
 
     def _build_top_bar(self) -> QWidget:
         bar = QWidget()
@@ -201,6 +274,23 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(6)
 
+        # Detection interval
+        layout.addWidget(QLabel("Interval:"))
+        self._interval_spin = QDoubleSpinBox()
+        self._interval_spin.setRange(0.2, 10.0)
+        self._interval_spin.setSingleStep(0.1)
+        self._interval_spin.setDecimals(1)
+        self._interval_spin.setValue(self._detection_interval)
+        self._interval_spin.setSuffix(" s")
+        self._interval_spin.setFixedWidth(68)
+        self._interval_spin.setToolTip("Seconds between detection frames")
+        self._interval_spin.valueChanged.connect(
+            lambda v: setattr(self, "_detection_interval", v)
+        )
+        layout.addWidget(self._interval_spin)
+
+        layout.addSpacing(6)
+
         # Detection toggle
         self._detect_btn = QPushButton("Start Detection")
         self._detect_btn.setCheckable(True)
@@ -218,6 +308,8 @@ class MainWindow(QMainWindow):
             self._refresh_window_list()
         else:
             self._capture_window = None
+            self._detection_manager.set_capture_window(None)
+            self._ocr_live_view.set_capture_window(None)
             self.statusBar().showMessage("Capture source: Full Screen")
 
     def _refresh_window_list(self) -> None:
@@ -242,12 +334,15 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Found {self._window_combo.count()} window(s)")
 
         self._window_combo.currentIndexChanged.connect(self._on_window_selected)
+        # Auto-apply whichever item is currently selected (index 0 after a refresh)
+        self._on_window_selected(self._window_combo.currentIndex())
 
     def _on_window_selected(self, index: int) -> None:
         w = self._window_combo.itemData(index)
         if isinstance(w, WindowInfo):
             self._capture_window = w
             self._detection_manager.set_capture_window(w)
+            self._ocr_live_view.set_capture_window(w)
             self.statusBar().showMessage(f"Capture source: {w.title} ({w.width}×{w.height})")
 
     def _build_playlist_tabs(self) -> QWidget:
@@ -317,10 +412,13 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-        # Repeat / shuffle toggles for active phase
+        # Repeat / shuffle toggles for active phase — defaults match PhaseConfig defaults
         self._repeat_cb = QCheckBox("Repeat playlist")
+        self._repeat_cb.setChecked(True)
         self._repeat_track_cb = QCheckBox("Repeat track")
+        self._repeat_track_cb.setChecked(True)
         self._shuffle_cb = QCheckBox("Shuffle")
+        self._shuffle_cb.setChecked(True)
         self._repeat_cb.stateChanged.connect(self._update_playback_flags)
         self._repeat_track_cb.stateChanged.connect(self._update_playback_flags)
         self._shuffle_cb.stateChanged.connect(self._update_playback_flags)
@@ -525,10 +623,13 @@ class MainWindow(QMainWindow):
         if playlist:
             self._repeat_cb.blockSignals(True)
             self._shuffle_cb.blockSignals(True)
+            self._repeat_track_cb.blockSignals(True)
             self._repeat_cb.setChecked(playlist.repeat)
             self._shuffle_cb.setChecked(playlist.shuffle)
+            self._repeat_track_cb.setChecked(self.player._repeat_track)
             self._repeat_cb.blockSignals(False)
             self._shuffle_cb.blockSignals(False)
+            self._repeat_track_cb.blockSignals(False)
 
     def _toggle_detection(self, checked: bool) -> None:
         if checked:
@@ -540,6 +641,7 @@ class MainWindow(QMainWindow):
             self._mode_label.setText("DETECTION")
             self._mode_label.setStyleSheet("background: #c0392b; color: white; border-radius: 4px;")
             self.statusBar().showMessage("Detection running — state forcing disabled")
+            self._ocr_live_view.set_detection_active(True)
             self._start_detection_thread()
         else:
             self._detect_btn.setText("Start Detection")
@@ -550,6 +652,57 @@ class MainWindow(QMainWindow):
             self._mode_label.setText("PREVIEW")
             self._mode_label.setStyleSheet("background: #444; color: #aaa; border-radius: 4px;")
             self.statusBar().showMessage("Preview mode — full control")
+            self._ocr_live_view.set_detection_active(False)
+
+    def _start_global_hotkey(self) -> None:
+        """Register a global Ctrl+L listener via pynput (fires even when app is unfocused)."""
+        try:
+            from pynput import keyboard as _kb
+
+            def _on_activate():
+                self._hotkey_triggered.emit()
+
+            listener = _kb.GlobalHotKeys({"<ctrl>+l": _on_activate})
+            listener.daemon = True
+            listener.start()
+            log.info("Global hotkey Ctrl+L registered")
+        except Exception as e:
+            log.warning("Could not register global hotkey: %s", e)
+            self.statusBar().showMessage(
+                "Global hotkey unavailable — grant Accessibility permission in System Settings", 8000
+            )
+
+    def _quick_capture(self) -> None:
+        """Ctrl+L — grab a screenshot, save to templates/, show in a floating preview."""
+        import cv2
+        from datetime import datetime
+
+        try:
+            if self._capture_window:
+                cap = WindowCapture(self._capture_window)
+            else:
+                from battlemode.capture.screen_capture import ScreenCapture
+                cap = ScreenCapture()
+            with cap:
+                frame = cap.grab()
+        except Exception as e:
+            self.statusBar().showMessage(f"Capture failed: {e}", 5000)
+            return
+
+        tmpl_dir = Path("user_data/templates")
+        tmpl_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = str(tmpl_dir / f"capture_{ts}.png")
+        cv2.imwrite(path, frame)
+        self.statusBar().showMessage(f"Saved: {path}", 6000)
+
+        # If Detection Manager has a rule selected, add to its template list
+        dm = self._detection_manager
+        if dm._selected_index >= 0:
+            dm.add_template_path(path)
+
+        # Show the capture in a floating preview window
+        _CapturePreviewWindow(frame, path, self).show()
 
     def _start_detection_thread(self) -> None:
         """Lazy import to avoid loading CV/Tesseract until needed."""
@@ -589,15 +742,17 @@ class MainWindow(QMainWindow):
                             frame = cap.grab()
                         except Exception:
                             log.exception("Frame capture failed")
-                            time.sleep(2.0)
+                            self._stop_event.wait(2.0)
                             continue
 
                         try:
                             result = detector.detect_result(frame)
                         except Exception:
                             log.exception("Detection failed")
-                            time.sleep(2.0)
+                            self._stop_event.wait(2.0)
                             continue
+
+                        self._frame_ready.emit(frame, result)
 
                         state = result.state if result else GameState.UNKNOWN
                         delay = result.trigger_delay if result else 0.0
@@ -617,7 +772,7 @@ class MainWindow(QMainWindow):
                             last = state
                             pending_state = None
 
-                        time.sleep(2.0)
+                        self._stop_event.wait(self._detection_interval)
             except Exception:
                 log.exception("Detection loop crashed")
             finally:
@@ -629,9 +784,25 @@ class MainWindow(QMainWindow):
         """Slot — always runs on main thread via Qt signal dispatch."""
         self._set_state(state, result)
 
+    def _update_tmpl_status(self, frame, result) -> None:
+        """Update the permanent template-score label in the status bar each detection cycle."""
+        if result and result.template_confidence > 0:
+            matched = result.template_matched
+            score = result.template_confidence
+            threshold = result.rule.template_threshold
+            icon = "✓" if matched else "✗"
+            color = "#50c878" if matched else "#e05c5c"
+            self._tmpl_status.setText(
+                f'<span style="color:{color};">{icon} tmpl {score:.2f}</span>'
+                f'<span style="color:#888;"> / {threshold:.2f}</span>'
+            )
+        else:
+            self._tmpl_status.setText("")
+
     def _on_profile_changed(self, name: str) -> None:
         self.statusBar().showMessage(f"Profile: {name}")
         self._detection_manager.load_profile(name)
+        self._ocr_live_view.load_profile(name)
 
     def _on_detection_profile_saved(self, game_id: str) -> None:
         self.statusBar().showMessage(f"Profile '{game_id}' saved.")
