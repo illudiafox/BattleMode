@@ -36,5 +36,20 @@ class ProfileManager:
         path.write_text(profile.model_dump_json(indent=2))
         self._loaded[profile.game_id] = profile
 
+    def duplicate(self, game_id: str, new_id: str, new_name: str) -> GameProfile:
+        source = self.load(game_id)
+        data = source.model_dump()
+        data["game_id"] = new_id
+        data["name"] = new_name
+        new_profile = GameProfile.model_validate(data)
+        self.save(new_profile)
+        return new_profile
+
+    def delete(self, game_id: str) -> None:
+        path = self.profiles_dir / f"{game_id}.json"
+        if path.exists():
+            path.unlink()
+        self._loaded.pop(game_id, None)
+
     def get_active(self) -> GameProfile | None:
         return next(iter(self._loaded.values()), None)

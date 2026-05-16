@@ -6,12 +6,14 @@ if the VLC dylib takes time to load.
 
 from __future__ import annotations
 
+import random
 import threading
 from enum import Enum, auto
 from typing import Optional
 
 from battlemode.profiles.models import GameState, PhaseConfig
 from battlemode.logger import get as get_log
+from battlemode.music import track_settings as _ts
 from .playlist import Playlist, Track
 
 log = get_log("player")
@@ -40,7 +42,7 @@ class MusicPlayer:
         self._state = PlayerState.STOPPED
         self._volume: int = 80
         self._repeat_track: bool = True
-        self._been_to: set[GameState] = set()   # states visited at least once
+        self._ignore_forced_transitions: bool = False
         self._lock = threading.Lock()
 
     # --- VLC lazy init ---
@@ -92,17 +94,15 @@ class MusicPlayer:
             self._active_state = state
             return
 
-        first_visit = state not in self._been_to
-        self._been_to.add(state)
         self._active_state = state
         self._repeat_track = config.repeat_track
         playlist.repeat = config.repeat
         playlist.shuffle = config.shuffle
 
-        if first_visit:
-            track = playlist.current()
-        else:
-            track = playlist.advance() or playlist.current()
+        # Always reshuffle on every phase entry so each visit has a fresh order
+        playlist._rebuild_order()
+        playlist._index = 0
+        track = playlist.current()
         if track:
             self._play_track(track)
 
@@ -159,6 +159,20 @@ class MusicPlayer:
         if self._media_player:
             self._media_player.audio_set_volume(self._volume)
 
+    def play_direct(self, state: GameState, track_index: int) -> None:
+        """Play a specific track by index without reshuffling (manual preview)."""
+        playlist = self._playlists.get(state)
+        if not playlist:
+            return
+        tracks = playlist.tracks()
+        if track_index < 0 or track_index >= len(tracks):
+            return
+        self._active_state = state
+        config = self._phase_configs.get(state, PhaseConfig())
+        self._repeat_track = config.repeat_track
+        playlist.skip_to(track_index)
+        self._play_track(tracks[track_index])
+
     def current_track(self) -> Optional[Track]:
         playlist = self._active_playlist()
         return playlist.current() if playlist else None
@@ -189,7 +203,10 @@ class MusicPlayer:
             import vlc
             media = self._vlc_instance.media_new(str(track.path))
             self._media_player.set_media(media)
-            self._media_player.audio_set_volume(self._volume)
+            # Per-track volume: master (0-100) × track_vol (0-200) / 100, clamped to 0-200
+            track_vol = _ts.get(str(track.path)).volume
+            effective_vol = int(min(200, self._volume * track_vol / 100))
+            self._media_player.audio_set_volume(effective_vol)
             self._media_player.play()
             self._state = PlayerState.PLAYING
         except Exception:
@@ -205,22 +222,43 @@ class MusicPlayer:
 
     def _handle_track_end(self) -> None:
         log.debug("Track ended (repeat_track=%s)", self._repeat_track)
-        if self._repeat_track:
-            playlist = self._active_playlist()
-            if playlist:
-                track = playlist.current()
-                if track:
-                    self._play_track(track)
+        playlist = self._active_playlist()
+        if not playlist:
             return
 
-        playlist = self._active_playlist()
-        if playlist:
-            track = playlist.advance()
+        if self._repeat_track:
+            track = playlist.current()
             if track:
                 self._play_track(track)
-            else:
-                log.info("Playlist exhausted for state %s — stopping", self._active_state)
-                self._state = PlayerState.STOPPED
+            return
+
+        # Forced next: if enabled and active state is not MENU, follow forced_next list
+        forced_track = None
+        # No forced transitions for reset/ambient states
+        _skip_states = {GameState.MENU, GameState.WIN, GameState.LOSS}
+        if (not self._ignore_forced_transitions and
+                self._active_state not in _skip_states):
+            current = playlist.current()
+            if current:
+                ts = _ts.get(str(current.path))
+                if ts.forced_next_enabled and ts.forced_next:
+                    chosen_path = random.choice(ts.forced_next)
+                    for t in playlist.tracks():
+                        if str(t.path) == chosen_path:
+                            forced_track = t
+                            break
+
+        if forced_track:
+            log.debug("Forced next → %s", forced_track.title)
+            self._play_track(forced_track)
+            return
+
+        track = playlist.advance()
+        if track:
+            self._play_track(track)
+        else:
+            log.info("Playlist exhausted for state %s — stopping", self._active_state)
+            self._state = PlayerState.STOPPED
 
     def __del__(self) -> None:
         try:

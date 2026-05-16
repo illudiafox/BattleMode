@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -20,6 +23,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -41,6 +45,80 @@ STATE_LABELS = {
 }
 LABEL_TO_STATE = {v: k for k, v in STATE_LABELS.items()}
 
+THUMB_SIZE = 280   # max width/height for gallery thumbnails
+
+
+class _TemplateGalleryWindow(QWidget):
+    """Floating window showing all template images for a rule as a scrollable grid."""
+
+    def __init__(self, paths: list[str], title: str = "Templates", parent=None) -> None:
+        super().__init__(
+            parent,
+            Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setWindowTitle(title)
+        self.setMinimumSize(600, 400)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        root.addWidget(scroll, stretch=1)
+
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setSpacing(12)
+        scroll.setWidget(container)
+
+        COLS = 3
+        for i, path in enumerate(paths):
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(4, 4, 4, 4)
+            cell_layout.setSpacing(4)
+
+            img_label = QLabel()
+            img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            img_label.setStyleSheet("background: #1a1a1a; border: 1px solid #333;")
+            img_label.setFixedSize(THUMB_SIZE, THUMB_SIZE)
+
+            import cv2
+            frame = cv2.imread(path)
+            if frame is not None:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb.shape
+                qimg = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+                pixmap = QPixmap.fromImage(qimg).scaled(
+                    THUMB_SIZE, THUMB_SIZE,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                img_label.setPixmap(pixmap)
+            else:
+                img_label.setText("(not found)")
+                img_label.setStyleSheet("background: #1a1a1a; color: #666; border: 1px solid #333;")
+
+            name_label = QLabel(Path(path).name)
+            name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            name_label.setStyleSheet("color: #aaa; font-size: 10px;")
+            name_label.setWordWrap(True)
+
+            cell_layout.addWidget(img_label)
+            cell_layout.addWidget(name_label)
+            grid.addWidget(cell, i // COLS, i % COLS)
+
+        close_btn = QPushButton("Close  [Esc]")
+        close_btn.clicked.connect(self.close)
+        root.addWidget(close_btn)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(event)
+
 
 class DetectionManagerWidget(QWidget):
     """
@@ -52,12 +130,17 @@ class DetectionManagerWidget(QWidget):
     """
 
     profile_saved = pyqtSignal(str)   # emitted with profile game_id after save
+    _burst_done = pyqtSignal(list)    # list[str] of saved paths — cross-thread
 
     def __init__(self, profile_manager: ProfileManager, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.profile_manager = profile_manager
         self._profile: Optional[GameProfile] = None
         self._selected_index: int = -1
+        self._capture_window = None
+        self._capture_device = None
+        self._gallery_window: Optional[_TemplateGalleryWindow] = None
+        self._burst_done.connect(self._on_burst_done)
         self._build_ui()
 
     # ------------------------------------------------------------------ #
@@ -244,32 +327,60 @@ class DetectionManagerWidget(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        hint = QLabel(
-            "Add one or more reference images. The rule fires if ANY template matches "
-            "at or above the confidence threshold. Use Ctrl+L to snap a quick capture."
+        # Multi-template toggle
+        self._multi_tmpl_cb = QCheckBox("Multi-template mode — match fires if ANY image in the list hits")
+        self._multi_tmpl_cb.setToolTip(
+            "When enabled: all template images are checked; one match is enough to trigger.\n"
+            "Also unlocks Capture Burst."
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888; font-size: 11px;")
-        layout.addWidget(hint)
+        self._multi_tmpl_cb.stateChanged.connect(self._on_multi_tmpl_changed)
+        layout.addWidget(self._multi_tmpl_cb)
+
+        # List + inline preview side by side
+        list_preview = QSplitter(Qt.Orientation.Horizontal)
 
         self._tmpl_list = QListWidget()
-        self._tmpl_list.setToolTip("Double-click an entry to see its full path")
-        layout.addWidget(self._tmpl_list, stretch=1)
+        self._tmpl_list.setToolTip("Click to preview · double-click to see full path")
+        self._tmpl_list.currentItemChanged.connect(self._on_tmpl_selection_changed)
+        list_preview.addWidget(self._tmpl_list)
 
+        self._tmpl_preview = QLabel("Select a template\nto preview it here")
+        self._tmpl_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._tmpl_preview.setStyleSheet("background: #111; color: #555; border: 1px solid #333;")
+        self._tmpl_preview.setMinimumWidth(180)
+        list_preview.addWidget(self._tmpl_preview)
+
+        list_preview.setSizes([220, 200])
+        layout.addWidget(list_preview, stretch=1)
+
+        # Primary action row
         btn_row = QHBoxLayout()
+
         browse_btn = QPushButton("Browse…")
         browse_btn.clicked.connect(self._browse_template)
         btn_row.addWidget(browse_btn)
 
         capture_btn = QPushButton("Capture")
-        capture_btn.setToolTip("Grab a screenshot now and add it as a template")
+        capture_btn.setToolTip("Grab one screenshot now and add it as a template")
         capture_btn.clicked.connect(self._capture_template)
         btn_row.addWidget(capture_btn)
+
+        self._burst_btn = QPushButton("Capture Burst")
+        self._burst_btn.setToolTip("Grab 5 frames ~200 ms apart and add all as templates")
+        self._burst_btn.setEnabled(False)
+        self._burst_btn.clicked.connect(self._capture_burst)
+        btn_row.addWidget(self._burst_btn)
 
         remove_btn = QPushButton("Remove")
         remove_btn.setToolTip("Remove selected template from this rule")
         remove_btn.clicked.connect(self._remove_template)
         btn_row.addWidget(remove_btn)
+
+        view_btn = QPushButton("View All")
+        view_btn.setToolTip("Open a gallery window showing all template images")
+        view_btn.clicked.connect(self._view_templates)
+        btn_row.addWidget(view_btn)
+
         layout.addLayout(btn_row)
 
         thresh_row = QWidget()
@@ -372,7 +483,11 @@ class DetectionManagerWidget(QWidget):
             for spin in [self._rx, self._ry, self._rw, self._rh]:
                 spin.setValue(0)
 
+        self._multi_tmpl_cb.setChecked(rule.multi_template)
+        self._burst_btn.setEnabled(rule.multi_template)
         self._tmpl_list.clear()
+        self._tmpl_preview.setText("Select a template\nto preview it here")
+        self._tmpl_preview.setPixmap(QPixmap())
         for path in rule.template_paths:
             self._tmpl_list_add(path)
         self._tmpl_threshold_spin.setValue(rule.template_threshold)
@@ -424,11 +539,17 @@ class DetectionManagerWidget(QWidget):
         else:
             rule.ocr_region = None
 
+        rule.multi_template = self._multi_tmpl_cb.isChecked()
         rule.template_paths = [
             self._tmpl_list.item(i).data(Qt.ItemDataRole.UserRole)
             for i in range(self._tmpl_list.count())
         ]
         rule.template_threshold = self._tmpl_threshold_spin.value()
+
+        # Invalidate cache for any paths in this rule so stale images are dropped
+        from battlemode.vision.state_detector import invalidate_template_cache
+        for p in rule.template_paths:
+            invalidate_template_cache(p)
 
         self._refresh_rule_list()
         self._rule_list.setCurrentRow(self._selected_index)
@@ -438,15 +559,8 @@ class DetectionManagerWidget(QWidget):
 
     def _pick_region(self) -> None:
         """Capture a frame and open the visual region picker."""
-        capture_window = getattr(self, "_capture_window", None)
         try:
-            if capture_window:
-                from battlemode.capture.window_capture import WindowCapture
-                cap = WindowCapture(capture_window)
-            else:
-                from battlemode.capture.screen_capture import ScreenCapture
-                cap = ScreenCapture()
-            with cap:
+            with self._make_capture() as cap:
                 frame = cap.grab()
         except Exception as e:
             QMessageBox.critical(self, "Capture failed", str(e))
@@ -463,6 +577,105 @@ class DetectionManagerWidget(QWidget):
                 self._ry.setValue(y)
                 self._rw.setValue(w)
                 self._rh.setValue(h)
+
+    def _on_tmpl_selection_changed(self, current, previous) -> None:
+        if current is None:
+            self._tmpl_preview.setText("Select a template\nto preview it here")
+            self._tmpl_preview.setPixmap(QPixmap())
+            return
+        path = current.data(Qt.ItemDataRole.UserRole)
+        if not path:
+            return
+        import cv2
+        frame = cv2.imread(path)
+        if frame is None:
+            self._tmpl_preview.setText(f"(file not found)\n{Path(path).name}")
+            return
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimg).scaled(
+            self._tmpl_preview.width() - 4,
+            self._tmpl_preview.height() - 4,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._tmpl_preview.setPixmap(pixmap)
+
+    def _on_multi_tmpl_changed(self, state: int) -> None:
+        enabled = bool(state)
+        self._burst_btn.setEnabled(enabled)
+        if self._profile and self._selected_index >= 0:
+            rules = sorted(self._profile.detection_rules, key=lambda r: -r.priority)
+            rules[self._selected_index].multi_template = enabled
+
+    def _capture_burst(self) -> None:
+        if not self._profile or self._selected_index < 0:
+            QMessageBox.warning(self, "No rule selected", "Select a rule first.")
+            return
+
+        self._burst_btn.setEnabled(False)
+        self._burst_btn.setText("Capturing…  0/5")
+
+        rules = sorted(self._profile.detection_rules, key=lambda r: -r.priority)
+        rule = rules[self._selected_index]
+        tmpl_dir = Path("user_data/templates")
+        tmpl_dir.mkdir(parents=True, exist_ok=True)
+        profile_id = self._profile.game_id
+        state_val = rule.state.value
+
+        def worker():
+            import cv2
+            from datetime import datetime
+            saved: list[str] = []
+            for i in range(5):
+                try:
+                    with self._make_capture() as cap:
+                        frame = cap.grab()
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S%f")[:19]
+                    path = str(tmpl_dir / f"{profile_id}_{state_val}_burst{i+1}_{ts}.png")
+                    cv2.imwrite(path, frame)
+                    saved.append(path)
+                except Exception:
+                    pass
+                if i < 4:
+                    import time
+                    time.sleep(0.2)
+            self._burst_done.emit(saved)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_burst_done(self, paths: list[str]) -> None:
+        for p in paths:
+            self._tmpl_list_add(p)
+        self._burst_btn.setEnabled(True)
+        self._burst_btn.setText("Capture Burst")
+        QMessageBox.information(
+            self, "Burst complete",
+            f"Captured {len(paths)} image(s).\n\nClick 'Apply Changes to Rule' to attach them."
+        )
+
+    def _view_templates(self) -> None:
+        paths = [
+            self._tmpl_list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self._tmpl_list.count())
+        ]
+        if not paths:
+            QMessageBox.information(self, "No templates", "Add at least one template image first.")
+            return
+        if self._gallery_window is not None:
+            try:
+                self._gallery_window.close()
+            except RuntimeError:
+                pass
+        title = "Templates"
+        if self._profile and self._selected_index >= 0:
+            rules = sorted(self._profile.detection_rules, key=lambda r: -r.priority)
+            rule = rules[self._selected_index]
+            title = f"Templates — {rule.state.value.upper()}"
+        self._gallery_window = _TemplateGalleryWindow(paths, title, self)
+        self._gallery_window.destroyed.connect(lambda: setattr(self, "_gallery_window", None))
+        self._gallery_window.show()
 
     def _tmpl_list_add(self, path: str) -> None:
         """Add a path to the template list widget (deduplicates)."""
@@ -500,15 +713,8 @@ class DetectionManagerWidget(QWidget):
             QMessageBox.warning(self, "No rule selected", "Select a rule first.")
             return
 
-        capture_window = getattr(self, "_capture_window", None)
         try:
-            if capture_window:
-                from battlemode.capture.window_capture import WindowCapture
-                cap = WindowCapture(capture_window)
-            else:
-                from battlemode.capture.screen_capture import ScreenCapture
-                cap = ScreenCapture()
-            with cap:
+            with self._make_capture() as cap:
                 frame = cap.grab()
         except Exception as e:
             QMessageBox.critical(self, "Capture failed", str(e))
@@ -545,6 +751,28 @@ class DetectionManagerWidget(QWidget):
         self.profile_saved.emit(self._profile.game_id)
         QMessageBox.information(self, "Saved", f"Profile '{self._profile.name}' saved.")
 
+    def _make_capture(self):
+        if self._capture_device:
+            from battlemode.capture.device_capture import DeviceCapture
+            return DeviceCapture(self._capture_device)
+        if self._capture_window:
+            from battlemode.capture.window_capture import WindowCapture
+            return WindowCapture(self._capture_window)
+        from battlemode.capture.screen_capture import ScreenCapture
+        return ScreenCapture()
+
     def set_capture_window(self, window) -> None:
-        """Called by MainWindow to pass the selected capture window (or None = full screen)."""
         self._capture_window = window
+        self._capture_device = None
+
+    def set_capture_device(self, device) -> None:
+        self._capture_device = device
+        self._capture_window = None
+
+    def refresh_profile_list(self, select: str = "") -> None:
+        """Called by MainWindow after creating or deleting a profile."""
+        self._refresh_profile_combo()
+        if select:
+            idx = self._profile_combo.findText(select)
+            if idx >= 0:
+                self._profile_combo.setCurrentIndex(idx)

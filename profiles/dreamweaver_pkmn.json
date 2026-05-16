@@ -1,0 +1,158 @@
+{
+  "name": "dreamweaver_pkmn",
+  "game_id": "dreamweaver_pkmn",
+  "description": "Detection profile for Pokemon Champions on Twitch via OBS capture card.",
+  "version": "1.0",
+  "detection_rules": [
+    {
+      "state": "menu",
+      "enabled": true,
+      "trigger_delay": 0.0,
+      "ocr_text": [],
+      "ocr_region": null,
+      "min_keywords": 1,
+      "template_paths": [
+        "user_data/templates/dreamweaver_pkmn_unknown_burst1_20260516_0150522964.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst2_20260516_0150525628.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst3_20260516_0150528302.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst4_20260516_0150530970.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst5_20260516_0150533637.png",
+        "user_data/templates/dreamweaver_pkmn_menu_burst1_20260516_0237273333.png",
+        "user_data/templates/dreamweaver_pkmn_menu_burst2_20260516_0237275810.png",
+        "user_data/templates/dreamweaver_pkmn_menu_burst3_20260516_0237278283.png",
+        "user_data/templates/dreamweaver_pkmn_menu_burst4_20260516_0237280746.png",
+        "user_data/templates/dreamweaver_pkmn_menu_burst5_20260516_0237283218.png"
+      ],
+      "template_threshold": 0.9,
+      "multi_template": true,
+      "priority": 1
+    },
+    {
+      "state": "selection",
+      "enabled": true,
+      "trigger_delay": 0.0,
+      "ocr_text": [],
+      "ocr_region": null,
+      "min_keywords": 1,
+      "template_paths": [
+        "user_data/templates/dreamweaver_pkmn_unknown_burst1_20260516_0201283640.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst2_20260516_0201286227.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst3_20260516_0201288865.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst4_20260516_0201291480.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst5_20260516_0201294085.png"
+      ],
+      "template_threshold": 0.75,
+      "multi_template": true,
+      "priority": 9
+    },
+    {
+      "state": "menu",
+      "enabled": true,
+      "trigger_delay": 0.0,
+      "ocr_text": [
+        "double battle"
+      ],
+      "ocr_region": [
+        1032,
+        727,
+        228,
+        50
+      ],
+      "min_keywords": 1,
+      "template_paths": [],
+      "template_threshold": 0.85,
+      "multi_template": false,
+      "priority": 1
+    },
+    {
+      "state": "loss",
+      "enabled": true,
+      "trigger_delay": 0.0,
+      "ocr_text": [
+        "you lost to"
+      ],
+      "ocr_region": null,
+      "min_keywords": 1,
+      "template_paths": [],
+      "template_threshold": 0.85,
+      "multi_template": true,
+      "priority": 8
+    },
+    {
+      "state": "win",
+      "enabled": true,
+      "trigger_delay": 0.0,
+      "ocr_text": [
+        "you defeated"
+      ],
+      "ocr_region": null,
+      "min_keywords": 1,
+      "template_paths": [],
+      "template_threshold": 0.85,
+      "multi_template": true,
+      "priority": 8
+    },
+    {
+      "state": "battle",
+      "enabled": true,
+      "trigger_delay": 0.0,
+      "ocr_text": [],
+      "ocr_region": null,
+      "min_keywords": 1,
+      "template_paths": [
+        "user_data/templates/dreamweaver_pkmn_unknown_burst1_20260516_0210050914.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst2_20260516_0210053528.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst3_20260516_0210056163.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst4_20260516_0210058793.png",
+        "user_data/templates/dreamweaver_pkmn_unknown_burst5_20260516_0210061414.png",
+        "user_data/templates/dreamweaver_pkmn_battle_burst1_20260516_0210124007.png",
+        "user_data/templates/dreamweaver_pkmn_battle_burst2_20260516_0210126637.png",
+        "user_data/templates/dreamweaver_pkmn_battle_burst3_20260516_0210129267.png",
+        "user_data/templates/dreamweaver_pkmn_battle_burst4_20260516_0210131908.png",
+        "user_data/templates/dreamweaver_pkmn_battle_burst5_20260516_0210134545.png"
+      ],
+      "template_threshold": 0.7,
+      "multi_template": true,
+      "priority": 10
+    }
+  ],
+  "phase_config": {
+    "menu": {
+      "repeat": true,
+      "repeat_track": false,
+      "shuffle": true,
+      "transition_fade_ms": 1500
+    },
+    "selection": {
+      "repeat": true,
+      "repeat_track": false,
+      "shuffle": true,
+      "transition_fade_ms": 800
+    },
+    "battle": {
+      "repeat": true,
+      "repeat_track": false,
+      "shuffle": false,
+      "transition_fade_ms": 500
+    },
+    "win": {
+      "repeat": false,
+      "repeat_track": true,
+      "shuffle": false,
+      "transition_fade_ms": 300
+    },
+    "loss": {
+      "repeat": false,
+      "repeat_track": true,
+      "shuffle": false,
+      "transition_fade_ms": 300
+    },
+    "unknown": {
+      "repeat": true,
+      "repeat_track": false,
+      "shuffle": false,
+      "transition_fade_ms": 1500
+    }
+  },
+  "capture_source": null
+}

@@ -29,9 +29,10 @@ class DetectionRule(BaseModel):
     ocr_region: Optional[tuple[int, int, int, int]] = None  # (x, y, w, h) — None = full screen
     min_keywords: int = 1                         # how many keywords must match to trigger
 
-    # Image template matching — match fires if ANY template exceeds the threshold
+    # Image template matching
     template_paths: list[str] = Field(default_factory=list)
     template_threshold: float = 0.85
+    multi_template: bool = False   # True → match fires if ANY template in list hits
 
     @model_validator(mode="before")
     @classmethod

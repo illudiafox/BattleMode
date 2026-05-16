@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from pathlib import Path
 from typing import Iterator, Optional
@@ -109,8 +110,26 @@ class Playlist:
     # --- Internal ---
 
     def _rebuild_order(self) -> None:
-        indices = list(range(len(self._tracks)))
+        from battlemode.music import track_settings as _ts
+        # Build (original_index, weight) for enabled tracks only
+        candidates: list[tuple[int, float]] = []
+        for i, track in enumerate(self._tracks):
+            ts = _ts.get(str(track.path))
+            if ts.enabled:
+                candidates.append((i, max(ts.weight, 1e-9)))
+
+        if not candidates:
+            self._order = []
+            self._index = 0
+            return
+
         if self.shuffle:
-            random.shuffle(indices)
+            # Weighted shuffle via exponential keys (Efraimidis-Spirakis RSample)
+            keyed = [(random.random() ** (1.0 / w), i) for i, w in candidates]
+            keyed.sort(reverse=True)  # higher key → earlier in order
+            indices = [i for _, i in keyed]
+        else:
+            indices = [i for i, _ in candidates]
+
         self._order = indices
         self._index = min(self._index, max(0, len(self._order) - 1))

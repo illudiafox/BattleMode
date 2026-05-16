@@ -32,6 +32,7 @@ class OcrLiveViewWidget(QWidget):
         self._profile_manager = profile_manager
         self._profile: Optional[GameProfile] = None
         self._capture_window = None
+        self._capture_device: Optional[str] = None
         self._last_frame = None   # most recent raw BGR frame (numpy array)
         self._test_done.connect(self._on_test_done)
         self._build_ui()
@@ -81,11 +82,15 @@ class OcrLiveViewWidget(QWidget):
 
     def set_capture_window(self, window) -> None:
         self._capture_window = window
+        self._capture_device = None
         if hasattr(self, "_source_label"):
-            if window:
-                self._source_label.setText(f"Source: {window.title}")
-            else:
-                self._source_label.setText("Source: Full Screen")
+            self._source_label.setText(f"Source: {window.title}" if window else "Source: Full Screen")
+
+    def set_capture_device(self, device: Optional[str]) -> None:
+        self._capture_device = device
+        self._capture_window = None
+        if hasattr(self, "_source_label"):
+            self._source_label.setText(f"Source: {device}" if device else "Source: Full Screen")
 
     def load_profile(self, game_id: str) -> None:
         try:
@@ -196,6 +201,7 @@ class OcrLiveViewWidget(QWidget):
         self._test_btn.setEnabled(False)
         self._test_btn.setText("Capturing…")
         capture_window = self._capture_window
+        capture_device = self._capture_device
         profile = self._profile   # snapshot
 
         def worker():
@@ -204,7 +210,10 @@ class OcrLiveViewWidget(QWidget):
 
                 detector = StateDetector(profile)
 
-                if capture_window:
+                if capture_device:
+                    from battlemode.capture.device_capture import DeviceCapture
+                    cap = DeviceCapture(capture_device)
+                elif capture_window:
                     from battlemode.capture.window_capture import WindowCapture
                     cap = WindowCapture(capture_window)
                 else:

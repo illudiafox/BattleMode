@@ -15,6 +15,27 @@ from battlemode.logger import get as get_log
 
 log = get_log("detector")
 
+# Module-level cache: path → grayscale numpy array.
+# Loaded once per session; call invalidate_template_cache() when a template is replaced.
+_template_cache: dict[str, np.ndarray] = {}
+
+
+def invalidate_template_cache(path: str | None = None) -> None:
+    """Remove one or all entries from the template image cache."""
+    if path:
+        _template_cache.pop(path, None)
+    else:
+        _template_cache.clear()
+
+
+def _load_template_image(path: str) -> np.ndarray | None:
+    if path in _template_cache:
+        return _template_cache[path]
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if img is not None:
+        _template_cache[path] = img
+    return img
+
 
 @dataclass
 class DetectionResult:
@@ -59,25 +80,22 @@ def _preprocess_for_ocr(frame: np.ndarray) -> Image.Image:
 def _match_template(frame: np.ndarray, template_path: str, threshold: float) -> tuple[bool, float]:
     """Return (matched, confidence) using normalised cross-correlation."""
     from pathlib import Path as _Path
-    import cv2 as _cv2
-    template = _cv2.imread(template_path, _cv2.IMREAD_GRAYSCALE)
+    template = _load_template_image(template_path)
     if template is None:
         log.warning("Template image not found: %s", template_path)
         return False, 0.0
-    gray = _cv2.cvtColor(frame, _cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     th, tw = template.shape[:2]
     fh, fw = gray.shape[:2]
     if th > fh or tw > fw:
         log.warning(
             "Template '%s' (%dx%d) is larger than the capture frame (%dx%d). "
-            "This usually means the template was captured at full-screen resolution "
-            "while detection is running on a smaller window. "
-            "Recapture the template with the correct window source selected.",
+            "Recapture the template with the correct source selected.",
             _Path(template_path).name, tw, th, fw, fh,
         )
         return False, 0.0
-    result = _cv2.matchTemplate(gray, template, _cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, _ = _cv2.minMaxLoc(result)
+    result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, _ = cv2.minMaxLoc(result)
     matched = max_val >= threshold
     log.debug(
         "Template '%s': conf=%.3f  threshold=%.2f → %s",
@@ -92,8 +110,10 @@ def _extract_text(frame: np.ndarray, region: Optional[tuple[int, int, int, int]]
         x, y, w, h = region
         frame = frame[y : y + h, x : x + w]
     img = _preprocess_for_ocr(frame)
+    # PSM 7 (single text line) is much faster for small region crops
+    psm = 7 if region else 6
     try:
-        text = pytesseract.image_to_string(img, config="--psm 6")
+        text = pytesseract.image_to_string(img, config=f"--psm {psm} --oem 1")
     except Exception:
         log.exception("Tesseract OCR failed")
         return ""
@@ -115,16 +135,22 @@ class StateDetector:
         result = self.detect_result(frame)
         return result.rule if result else None
 
-    def detect_result(self, frame: np.ndarray) -> DetectionResult | None:
+    def detect_result(
+        self,
+        frame: np.ndarray,
+        filter_states: set[GameState] | None = None,
+    ) -> DetectionResult | None:
         """Return a full DetectionResult (rule + matched keywords) or None.
 
-        OCR results are cached by region key so each unique region is only
-        processed once per call, even if multiple rules share that region.
+        filter_states: when provided (streamline mode), only rules whose target
+        state is in this set are evaluated.  OCR results are cached by region
+        key so each unique region is processed once per call.
         """
         log.debug("Running detection against %d rules", len(self._rules))
-        # region key → extracted text  (None = full frame)
         ocr_cache: dict[tuple | None, str] = {}
         for rule in self._rules:
+            if filter_states is not None and rule.state not in filter_states:
+                continue
             result = self._match_result(frame, rule, ocr_cache)
             if result:
                 log.debug("Matched: %s", result.summary())
@@ -141,11 +167,14 @@ class StateDetector:
         if not rule.enabled:
             return None
 
-        # --- template check (fast, ~10 ms each) — match fires if ANY template hits ---
+        # --- template check (fast, ~10 ms each) --- #
+        # multi_template=True → check all paths, fire on any hit
+        # multi_template=False → check only the first path
+        paths_to_check = rule.template_paths if rule.multi_template else rule.template_paths[:1]
         tmpl_ok = False
         tmpl_conf = 0.0
         best_tmpl_path = ""
-        for tpath in rule.template_paths:
+        for tpath in paths_to_check:
             ok, conf = _match_template(frame, tpath, rule.template_threshold)
             if conf > tmpl_conf:
                 tmpl_conf = conf
