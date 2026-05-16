@@ -31,5 +31,8 @@ user_data/
 # macOS
 .DS_Store
 
+# Logs
+logs/
+
 # Environment
 .env

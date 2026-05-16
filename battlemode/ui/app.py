@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 
+import battlemode.logger as _bm_logger
 from battlemode.capture.window_capture import WindowCapture, WindowInfo, list_windows
 from battlemode.music.player import MusicPlayer, PlayerState
 from battlemode.music.playlist import Playlist, Track
@@ -38,6 +39,8 @@ from battlemode.music.youtube import download_audio, is_youtube_url
 from battlemode.profiles.manager import ProfileManager
 from battlemode.profiles.models import GameState
 from battlemode.ui.detection_manager import DetectionManagerWidget
+
+log = _bm_logger.get("ui")
 
 MUSIC_DIR = Path(__file__).parent.parent.parent / "music"
 STATE_COLORS = {
@@ -542,6 +545,8 @@ class MainWindow(QMainWindow):
         capture_window = self._capture_window
 
         def loop():
+            log.info("Detection loop started (source=%s)",
+                     capture_window.title if capture_window else "full screen")
             last = GameState.UNKNOWN
             pending_state: GameState | None = None
             pending_since: float = 0.0
@@ -552,29 +557,46 @@ class MainWindow(QMainWindow):
                 from battlemode.capture.screen_capture import ScreenCapture
                 cap = ScreenCapture()
 
-            with cap:
-                while not self._stop_event.is_set():
-                    frame = cap.grab()
-                    rule = detector.detect_rule(frame)
-                    state = rule.state if rule else GameState.UNKNOWN
-                    delay = rule.trigger_delay if rule else 0.0
-                    now = time.time()
+            try:
+                with cap:
+                    while not self._stop_event.is_set():
+                        try:
+                            frame = cap.grab()
+                        except Exception:
+                            log.exception("Frame capture failed")
+                            time.sleep(2.0)
+                            continue
 
-                    if state == GameState.UNKNOWN or state == last:
-                        # No new state detected — reset pending
-                        pending_state = None
-                    elif state != pending_state:
-                        # New candidate — start the hold timer
-                        pending_state = state
-                        pending_since = now
-                    elif now - pending_since >= delay:
-                        # Held long enough — commit the transition
-                        self.player.transition_to(state)
-                        self._set_state(state)
-                        last = state
-                        pending_state = None
+                        try:
+                            rule = detector.detect_rule(frame)
+                        except Exception:
+                            log.exception("Detection failed")
+                            time.sleep(2.0)
+                            continue
 
-                    time.sleep(2.0)
+                        state = rule.state if rule else GameState.UNKNOWN
+                        delay = rule.trigger_delay if rule else 0.0
+                        now = time.time()
+
+                        if state == GameState.UNKNOWN or state == last:
+                            pending_state = None
+                        elif state != pending_state:
+                            log.debug("Pending state: %s (delay=%.1fs)", state.value, delay)
+                            pending_state = state
+                            pending_since = now
+                        elif now - pending_since >= delay:
+                            log.info("Committing transition → %s (held %.1fs)",
+                                     state.value, now - pending_since)
+                            self.player.transition_to(state)
+                            self._set_state(state)
+                            last = state
+                            pending_state = None
+
+                        time.sleep(2.0)
+            except Exception:
+                log.exception("Detection loop crashed")
+            finally:
+                log.info("Detection loop stopped")
 
         threading.Thread(target=loop, daemon=True).start()
 

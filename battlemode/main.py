@@ -7,11 +7,17 @@ import time
 import threading
 from pathlib import Path
 
+import battlemode.logger as _logger
+_logger.setup()  # must be first — before any other battlemode imports log anything
+
 from battlemode.profiles.manager import ProfileManager
 from battlemode.music.player import MusicPlayer
 
+log = _logger.get("main")
+
 
 def run_gui() -> None:
+    log.info("Starting BattleMode GUI")
     from PyQt6.QtWidgets import QApplication
     from battlemode.ui.app import MainWindow
 

@@ -11,6 +11,9 @@ import pytesseract
 from PIL import Image
 
 from battlemode.profiles.models import DetectionRule, GameProfile, GameState
+from battlemode.logger import get as get_log
+
+log = get_log("detector")
 
 
 def _preprocess_for_ocr(frame: np.ndarray) -> Image.Image:
@@ -30,7 +33,11 @@ def _extract_text(frame: np.ndarray, region: Optional[tuple[int, int, int, int]]
         x, y, w, h = region
         frame = frame[y : y + h, x : x + w]
     img = _preprocess_for_ocr(frame)
-    text = pytesseract.image_to_string(img, config="--psm 6")
+    try:
+        text = pytesseract.image_to_string(img, config="--psm 6")
+    except Exception:
+        log.exception("Tesseract OCR failed")
+        return ""
     return text.lower()
 
 
@@ -51,9 +58,12 @@ class StateDetector:
 
     def detect_rule(self, frame: np.ndarray) -> "DetectionRule | None":
         """Return the matching rule (with delay, priority, etc.) or None."""
+        log.debug("Running detection against %d rules", len(self._rules))
         for rule in self._rules:
             if self._matches(frame, rule):
+                log.debug("Rule matched: state=%s priority=%d", rule.state.value, rule.priority)
                 return rule
+        log.debug("No rule matched → UNKNOWN")
         return None
 
     def _matches(self, frame: np.ndarray, rule: DetectionRule) -> bool:

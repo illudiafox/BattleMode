@@ -11,7 +11,10 @@ from enum import Enum, auto
 from typing import Optional
 
 from battlemode.profiles.models import GameState, PhaseConfig
+from battlemode.logger import get as get_log
 from .playlist import Playlist, Track
+
+log = get_log("player")
 
 
 class PlayerState(Enum):
@@ -45,6 +48,7 @@ class MusicPlayer:
         """Initialize VLC on first use. Returns False if unavailable."""
         if self._vlc_ok is not None:
             return self._vlc_ok
+        log.debug("Initializing VLC...")
         try:
             import vlc
             self._vlc_instance = vlc.Instance("--no-xlib")
@@ -52,8 +56,9 @@ class MusicPlayer:
             events = self._media_player.event_manager()
             events.event_attach(vlc.EventType.MediaPlayerEndReached, self._on_track_end)
             self._vlc_ok = True
+            log.info("VLC initialized OK")
         except Exception as e:
-            print(f"[BattleMode] VLC unavailable: {e}")
+            log.error("VLC unavailable: %s", e, exc_info=True)
             self._vlc_ok = False
         return self._vlc_ok
 
@@ -75,15 +80,16 @@ class MusicPlayer:
     def transition_to(self, state: GameState, fade_ms: Optional[int] = None) -> None:
         """Switch to the playlist for a new game state."""
         if state == self._active_state:
-            # Same state — only restart if the player has stopped (playlist exhausted)
             if self._state != PlayerState.STOPPED:
                 return
 
+        log.info("State transition: %s → %s", self._active_state, state.value)
         config = self._phase_configs.get(state, PhaseConfig())
         playlist = self._playlists.get(state)
         if playlist is None or playlist.is_empty():
+            log.debug("No playlist for state %s — going silent", state.value)
             self._active_state = state
-            return  # No music for this state — silence
+            return
 
         self._active_state = state
         self._repeat_track = config.repeat_track
@@ -172,15 +178,20 @@ class MusicPlayer:
     def _play_track(self, track: Track, fade_ms: int = 0) -> None:
         if not self._ensure_vlc():
             return
-        import vlc
-        media = self._vlc_instance.media_new(str(track.path))
-        self._media_player.set_media(media)
-        self._media_player.audio_set_volume(self._volume)
-        self._media_player.play()
-        self._state = PlayerState.PLAYING
+        log.info("Playing: %s", track.path)
+        try:
+            import vlc
+            media = self._vlc_instance.media_new(str(track.path))
+            self._media_player.set_media(media)
+            self._media_player.audio_set_volume(self._volume)
+            self._media_player.play()
+            self._state = PlayerState.PLAYING
+        except Exception:
+            log.exception("Failed to play track: %s", track.path)
 
     def _on_track_end(self, event) -> None:
         """Called by VLC event thread when current track finishes."""
+        log.debug("Track ended (repeat_track=%s)", self._repeat_track)
         if self._repeat_track:
             playlist = self._active_playlist()
             if playlist:
@@ -195,7 +206,7 @@ class MusicPlayer:
             if track:
                 self._play_track(track)
             else:
-                # Playlist exhausted — stop. Stay in current state but go silent.
+                log.info("Playlist exhausted for state %s — stopping", self._active_state)
                 self._state = PlayerState.STOPPED
 
     def __del__(self) -> None:
