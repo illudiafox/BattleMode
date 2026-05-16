@@ -46,10 +46,15 @@ class StateDetector:
 
     def detect(self, frame: np.ndarray) -> GameState:
         """Return the detected GameState for a given frame."""
+        rule = self.detect_rule(frame)
+        return rule.state if rule else GameState.UNKNOWN
+
+    def detect_rule(self, frame: np.ndarray) -> "DetectionRule | None":
+        """Return the matching rule (with delay, priority, etc.) or None."""
         for rule in self._rules:
             if self._matches(frame, rule):
-                return rule.state
-        return GameState.UNKNOWN
+                return rule
+        return None
 
     def _matches(self, frame: np.ndarray, rule: DetectionRule) -> bool:
         if not rule.enabled:

@@ -10,6 +10,7 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -147,6 +148,21 @@ class DetectionManagerWidget(QWidget):
         self._priority_spin.setToolTip("Higher = checked first. Use to break ties between rules.")
         form.addRow("Priority:", self._priority_spin)
 
+        # Trigger delay
+        delay_row = QWidget()
+        delay_layout = QHBoxLayout(delay_row)
+        delay_layout.setContentsMargins(0, 0, 0, 0)
+        self._delay_spin = QDoubleSpinBox()
+        self._delay_spin.setRange(0.0, 60.0)
+        self._delay_spin.setSingleStep(0.5)
+        self._delay_spin.setDecimals(1)
+        self._delay_spin.setValue(0.0)
+        self._delay_spin.setFixedWidth(70)
+        delay_layout.addWidget(self._delay_spin)
+        delay_layout.addWidget(QLabel("seconds — state must be held this long before switching"))
+        delay_layout.addStretch()
+        form.addRow("Trigger delay:", delay_row)
+
         # OCR keywords
         kw_hint = QLabel("One keyword per line. State triggers when at least N keywords are found.")
         kw_hint.setWordWrap(True)
@@ -272,8 +288,9 @@ class DetectionManagerWidget(QWidget):
     def _rule_label(self, rule: DetectionRule) -> str:
         keywords = ", ".join(rule.ocr_text or [])[:50]
         region = "full screen" if not rule.ocr_region else "region"
+        delay = f"  delay:{rule.trigger_delay}s" if rule.trigger_delay > 0 else ""
         status = "" if rule.enabled else "  [DISABLED]"
-        return f"[{rule.state.value.upper()}] p{rule.priority}  min:{rule.min_keywords}  |  {keywords}  ({region}){status}"
+        return f"[{rule.state.value.upper()}] p{rule.priority}  min:{rule.min_keywords}{delay}  |  {keywords}  ({region}){status}"
 
     def _on_rule_selected(self, row: int) -> None:
         if not self._profile or row < 0:
@@ -292,6 +309,7 @@ class DetectionManagerWidget(QWidget):
             self._state_combo.setCurrentIndex(idx)
 
         self._priority_spin.setValue(rule.priority)
+        self._delay_spin.setValue(rule.trigger_delay)
         self._min_keywords_spin.setValue(rule.min_keywords)
         self._keywords_edit.setPlainText("\n".join(rule.ocr_text or []))
 
@@ -339,6 +357,7 @@ class DetectionManagerWidget(QWidget):
         state_label = self._state_combo.currentText()
         rule.state = LABEL_TO_STATE.get(state_label, GameState.UNKNOWN)
         rule.priority = self._priority_spin.value()
+        rule.trigger_delay = self._delay_spin.value()
         rule.min_keywords = self._min_keywords_spin.value()
 
         raw = self._keywords_edit.toPlainText()

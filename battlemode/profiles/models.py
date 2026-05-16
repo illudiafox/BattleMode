@@ -23,6 +23,7 @@ class DetectionRule(BaseModel):
 
     state: GameState
     enabled: bool = True                          # disabled rules are never evaluated
+    trigger_delay: float = 0.0                    # seconds state must be held before switching
     # OCR-based: look for text in a screen region
     ocr_text: Optional[list[str]] = None          # keywords to search for
     ocr_region: Optional[tuple[int, int, int, int]] = None  # (x, y, w, h) — None = full screen

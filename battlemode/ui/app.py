@@ -85,6 +85,9 @@ class MainWindow(QMainWindow):
         self._poll_timer.timeout.connect(self._poll_player)
         self._poll_timer.start(500)
 
+        # Warn if VLC isn't available (checked lazily so this is non-blocking)
+        QTimer.singleShot(500, self._check_vlc)
+
     # ------------------------------------------------------------------ #
     #  UI construction                                                      #
     # ------------------------------------------------------------------ #
@@ -177,6 +180,17 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._refresh_windows_btn)
 
         layout.addStretch()
+
+        # Mode badge
+        self._mode_label = QLabel("PREVIEW")
+        self._mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._mode_label.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+        self._mode_label.setFixedWidth(90)
+        self._mode_label.setFixedHeight(28)
+        self._mode_label.setStyleSheet("background: #444; color: #aaa; border-radius: 4px;")
+        layout.addWidget(self._mode_label)
+
+        layout.addSpacing(6)
 
         # Detection toggle
         self._detect_btn = QPushButton("Start Detection")
@@ -492,13 +506,22 @@ class MainWindow(QMainWindow):
         if checked:
             self._detect_btn.setText("Stop Detection")
             self._detection_active = True
-            self.statusBar().showMessage("Detection running…")
+            # Lock: cannot manually force state while detection is running
+            self._force_combo.setEnabled(False)
+            self._force_combo.setCurrentIndex(0)
+            self._mode_label.setText("DETECTION")
+            self._mode_label.setStyleSheet("background: #c0392b; color: white; border-radius: 4px;")
+            self.statusBar().showMessage("Detection running — state forcing disabled")
             self._start_detection_thread()
         else:
             self._detect_btn.setText("Start Detection")
             self._detection_active = False
             self._stop_event.set()
-            self.statusBar().showMessage("Detection stopped")
+            # Unlock: preview mode
+            self._force_combo.setEnabled(True)
+            self._mode_label.setText("PREVIEW")
+            self._mode_label.setStyleSheet("background: #444; color: #aaa; border-radius: 4px;")
+            self.statusBar().showMessage("Preview mode — full control")
 
     def _start_detection_thread(self) -> None:
         """Lazy import to avoid loading CV/Tesseract until needed."""
@@ -520,19 +543,37 @@ class MainWindow(QMainWindow):
 
         def loop():
             last = GameState.UNKNOWN
+            pending_state: GameState | None = None
+            pending_since: float = 0.0
+
             if capture_window:
                 cap = WindowCapture(capture_window)
             else:
                 from battlemode.capture.screen_capture import ScreenCapture
                 cap = ScreenCapture()
+
             with cap:
                 while not self._stop_event.is_set():
                     frame = cap.grab()
-                    state = detector.detect(frame)
-                    if state != last and state != GameState.UNKNOWN:
+                    rule = detector.detect_rule(frame)
+                    state = rule.state if rule else GameState.UNKNOWN
+                    delay = rule.trigger_delay if rule else 0.0
+                    now = time.time()
+
+                    if state == GameState.UNKNOWN or state == last:
+                        # No new state detected — reset pending
+                        pending_state = None
+                    elif state != pending_state:
+                        # New candidate — start the hold timer
+                        pending_state = state
+                        pending_since = now
+                    elif now - pending_since >= delay:
+                        # Held long enough — commit the transition
                         self.player.transition_to(state)
                         self._set_state(state)
                         last = state
+                        pending_state = None
+
                     time.sleep(2.0)
 
         threading.Thread(target=loop, daemon=True).start()
@@ -558,6 +599,14 @@ class MainWindow(QMainWindow):
             playlist.repeat = self._repeat_cb.isChecked()
             playlist.shuffle = self._shuffle_cb.isChecked()
         self.player._repeat_track = self._repeat_track_cb.isChecked()
+
+    def _check_vlc(self) -> None:
+        if not self.player.is_vlc_available():
+            QMessageBox.warning(
+                self, "VLC not found",
+                "Could not initialize VLC. Music playback will be disabled.\n\n"
+                "Install VLC: brew install vlc  (or download from videolan.org)"
+            )
 
     def _poll_player(self) -> None:
         track = self.player.current_track()

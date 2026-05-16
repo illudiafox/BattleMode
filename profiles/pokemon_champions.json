@@ -3,47 +3,83 @@
   "game_id": "pokemon_champions",
   "description": "Detection profile for Pokemon Champions on Twitch via OBS capture card.",
   "version": "1.0",
-  "capture_source": null,
   "detection_rules": [
     {
       "state": "battle",
-      "priority": 10,
-      "ocr_text": ["fight", "bag", "pokemon", "run", "hp"],
+      "enabled": true,
+      "ocr_text": [
+        "fight",
+        "bag",
+        "pokemon",
+        "run",
+        "hp"
+      ],
       "ocr_region": null,
+      "min_keywords": 1,
       "template_path": null,
-      "template_threshold": 0.85
+      "template_threshold": 0.85,
+      "priority": 10
     },
     {
       "state": "selection",
-      "priority": 8,
-      "ocr_text": ["choose your", "select pokemon", "pick your team"],
+      "enabled": true,
+      "ocr_text": [
+        "choose your",
+        "select pokemon",
+        "pick your team"
+      ],
       "ocr_region": null,
+      "min_keywords": 1,
       "template_path": null,
-      "template_threshold": 0.85
+      "template_threshold": 0.85,
+      "priority": 8
     },
     {
       "state": "win",
-      "priority": 9,
-      "ocr_text": ["you win", "victory", "winner"],
+      "enabled": true,
+      "ocr_text": [
+        "you win",
+        "victory",
+        "winner"
+      ],
       "ocr_region": null,
+      "min_keywords": 1,
       "template_path": null,
-      "template_threshold": 0.85
+      "template_threshold": 0.85,
+      "priority": 9
     },
     {
       "state": "loss",
-      "priority": 9,
-      "ocr_text": ["you lose", "defeated", "blacked out", "whited out"],
+      "enabled": true,
+      "ocr_text": [
+        "you lose",
+        "defeated",
+        "blacked out",
+        "whited out"
+      ],
       "ocr_region": null,
+      "min_keywords": 1,
       "template_path": null,
-      "template_threshold": 0.85
+      "template_threshold": 0.85,
+      "priority": 9
     },
     {
       "state": "menu",
-      "priority": 1,
-      "ocr_text": ["press start", "main menu", "play", "options", "title"],
+      "enabled": true,
+      "ocr_text": [
+        "battle",
+        "recruit",
+        "box",
+        "train",
+        "shop",
+        "style",
+        "mailbox"
+      ],
       "ocr_region": null,
+      "min_keywords": 1,
       "template_path": null,
-      "template_threshold": 0.85
+      "template_threshold": 0.85,
+      "priority": 1
     }
   ],
   "phase_config": {
@@ -83,5 +119,6 @@
       "shuffle": false,
       "transition_fade_ms": 1500
     }
-  }
+  },
+  "capture_source": null
 }
