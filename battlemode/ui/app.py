@@ -35,6 +35,7 @@ from battlemode.music.playlist import Playlist, Track
 from battlemode.music.youtube import download_audio, is_youtube_url
 from battlemode.profiles.manager import ProfileManager
 from battlemode.profiles.models import GameState
+from battlemode.ui.detection_manager import DetectionManagerWidget
 
 MUSIC_DIR = Path(__file__).parent.parent.parent / "music"
 STATE_COLORS = {
@@ -94,14 +95,28 @@ class MainWindow(QMainWindow):
         # Top bar: state indicator + profile selector + detection toggle
         root.addWidget(self._build_top_bar())
 
-        # Middle: tabs (playlists) + now-playing sidebar
+        # Main tabs: Player | Detection Manager
+        self._main_tabs = QTabWidget()
+
+        # --- Player tab ---
+        player_tab = QWidget()
+        player_layout = QVBoxLayout(player_tab)
+        player_layout.setContentsMargins(0, 6, 0, 0)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_playlist_tabs())
         splitter.addWidget(self._build_now_playing())
         splitter.setSizes([600, 300])
-        root.addWidget(splitter, stretch=1)
+        player_layout.addWidget(splitter)
+        self._main_tabs.addTab(player_tab, "Player")
 
-        # Bottom: transport controls + volume
+        # --- Detection Manager tab ---
+        self._detection_manager = DetectionManagerWidget(self.profile_manager)
+        self._detection_manager.profile_saved.connect(self._on_detection_profile_saved)
+        self._main_tabs.addTab(self._detection_manager, "Detection Manager")
+
+        root.addWidget(self._main_tabs, stretch=1)
+
+        # Bottom: transport controls + volume (always visible)
         root.addWidget(self._build_transport())
 
         self.setStatusBar(QStatusBar())
@@ -419,6 +434,10 @@ class MainWindow(QMainWindow):
 
     def _on_profile_changed(self, name: str) -> None:
         self.statusBar().showMessage(f"Profile: {name}")
+        self._detection_manager.load_profile(name)
+
+    def _on_detection_profile_saved(self, game_id: str) -> None:
+        self.statusBar().showMessage(f"Profile '{game_id}' saved.")
 
     def _on_force_state(self, index: int) -> None:
         if index == 0:
