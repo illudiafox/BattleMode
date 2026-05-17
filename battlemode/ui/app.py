@@ -46,6 +46,8 @@ from battlemode.profiles.manager import ProfileManager
 from battlemode.profiles.models import GameState
 from battlemode.ui.debug_tab import DebugTabWidget, QtLogHandler
 from battlemode.ui.detection_manager import DetectionManagerWidget
+from battlemode.ui.hotkeys_tab import StateHotkeysTab
+from battlemode.ui.http_server import ControlServer
 from battlemode.ui.ocr_live_view import OcrLiveViewWidget
 from battlemode.ui import settings as _settings
 
@@ -205,6 +207,35 @@ class _DeviceLivePreview(QWidget):
             super().keyPressEvent(event)
 
 
+class _FrameBuffer:
+    """Latest-frame slot for producer-consumer capture pipeline.
+
+    One producer thread continuously grabs frames and calls put().
+    One consumer thread calls get() to block until a new frame arrives.
+    Frames are never queued — put() always overwrites with the newest frame,
+    so the consumer always processes the most recent capture.
+
+    To revert to the old single-thread design, remove this class and restore
+    _start_detection_thread to open make_cap() inside the single loop thread
+    (see git log for the pre-pipeline version).
+    """
+
+    def __init__(self) -> None:
+        self._frame = None
+        self._cond = threading.Condition()
+
+    def put(self, frame) -> None:
+        with self._cond:
+            self._frame = frame
+            self._cond.notify_all()
+
+    def get(self, timeout: float = 0.5):
+        """Block until a new frame arrives (or timeout). Returns latest frame or None."""
+        with self._cond:
+            self._cond.wait(timeout)
+            return self._frame
+
+
 class PlayerSignals(QObject):
     state_changed = pyqtSignal(str)   # GameState value
     track_changed = pyqtSignal(str)   # track title
@@ -215,6 +246,7 @@ class MainWindow(QMainWindow):
     _detected = pyqtSignal(object, object)   # (GameState, DetectionResult | None)
     _hotkey_triggered = pyqtSignal()          # global Ctrl+L → main thread
     _frame_ready = pyqtSignal(object, object) # (frame, DetectionResult | None) — live feed
+    _external_force = pyqtSignal(object)      # GameState — from HTTP server or hotkey thread
 
     def __init__(self, player: MusicPlayer, profile_manager: ProfileManager) -> None:
         super().__init__()
@@ -236,6 +268,9 @@ class MainWindow(QMainWindow):
         # Route cross-thread state updates safely to the main thread
         self._detected.connect(self._on_detected)
         self._hotkey_triggered.connect(self._quick_capture)
+        self._external_force.connect(self._on_external_force)
+
+        self._http_server: ControlServer | None = None
 
         self.setWindowTitle("BattleMode")
         self.setMinimumSize(900, 600)
@@ -297,6 +332,11 @@ class MainWindow(QMainWindow):
         # --- OCR Live View tab ---
         self._ocr_live_view = OcrLiveViewWidget(self.profile_manager)
         self._main_tabs.addTab(self._ocr_live_view, "OCR Live View")
+
+        # --- State Hotkeys tab ---
+        self._hotkeys_tab = StateHotkeysTab()
+        self._hotkeys_tab.force_state.connect(self._external_force)
+        self._main_tabs.addTab(self._hotkeys_tab, "State Hotkeys")
 
         # --- Debug tab ---
         self._debug_tab = DebugTabWidget()
@@ -416,7 +456,7 @@ class MainWindow(QMainWindow):
         # Detection interval
         layout.addWidget(QLabel("Interval:"))
         self._interval_spin = QDoubleSpinBox()
-        self._interval_spin.setRange(0.05, 10.0)
+        self._interval_spin.setRange(0.0, 10.0)
         self._interval_spin.setSingleStep(0.05)
         self._interval_spin.setDecimals(1)
         self._interval_spin.setValue(self._detection_interval)
@@ -848,6 +888,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._streamline_cb)
 
         layout.addStretch()
+
+        # HTTP server toggle
+        self._http_btn = QPushButton("HTTP: OFF")
+        self._http_btn.setCheckable(True)
+        self._http_btn.setFixedWidth(96)
+        self._http_btn.setToolTip("Start / stop the HTTP control server")
+        self._http_btn.clicked.connect(self._toggle_http_server)
+        layout.addWidget(self._http_btn)
+
+        layout.addSpacing(8)
 
         # Manual state override
         layout.addWidget(QLabel("Force state:"))
@@ -1317,9 +1367,20 @@ class MainWindow(QMainWindow):
         _CapturePreviewWindow(frame, path, self).show()
 
     def _start_detection_thread(self) -> None:
-        """Lazy import to avoid loading CV/Tesseract until needed."""
-        from battlemode.capture.screen_capture import ScreenCapture
-        from battlemode.vision.state_detector import StateDetector, DetectionResult
+        """Start the capture + detection pipeline (two threads).
+
+        Thread 1 — capture worker: opens the capture source and grabs frames
+        as fast as the hardware allows, writing each into a _FrameBuffer slot.
+
+        Thread 2 — detection worker: reads the latest frame from the buffer,
+        runs OCR/template detection, then waits the configured interval before
+        reading the next frame.  It never blocks on hardware I/O.
+
+        To revert to the original single-thread design (grab inside detect loop):
+            git show HEAD~1:battlemode/ui/app.py | grep -A80 "_start_detection_thread"
+        or check out the file before commit that added _FrameBuffer.
+        """
+        from battlemode.vision.state_detector import StateDetector
 
         profile_id = self._profile_combo.currentText()
         try:
@@ -1333,62 +1394,82 @@ class MainWindow(QMainWindow):
         self._stop_event.clear()
 
         make_cap = self._make_capture
+        buffer = _FrameBuffer()
 
-        def loop():
-            source_label = (
-                self._capture_device or
-                (self._capture_window.title if self._capture_window else "full screen")
-            )
-            log.info("Detection loop started (source=%s)", source_label)
-            last = GameState.UNKNOWN
-            pending_state: GameState | None = None
-            pending_since: float = 0.0
-
+        # --- Thread 1: capture worker ---
+        def capture_worker() -> None:
+            log.info("Capture worker started")
             try:
                 with make_cap() as cap:
                     while not self._stop_event.is_set():
                         try:
-                            frame = cap.grab()
+                            buffer.put(cap.grab())
                         except Exception:
-                            log.exception("Frame capture failed")
+                            log.exception("Frame grab failed")
                             self._stop_event.wait(2.0)
-                            continue
-
-                        try:
-                            fs = STREAMLINE_MAP.get(last) if self._streamline else None
-                            result = detector.detect_result(frame, fs)
-                        except Exception:
-                            log.exception("Detection failed")
-                            self._stop_event.wait(2.0)
-                            continue
-
-                        self._frame_ready.emit(frame, result)
-
-                        state = result.state if result else GameState.UNKNOWN
-                        delay = result.trigger_delay if result else 0.0
-                        now = time.time()
-
-                        if state == GameState.UNKNOWN or state == last:
-                            pending_state = None
-                        elif state != pending_state:
-                            log.debug("Pending state: %s (delay=%.1fs)", state.value, delay)
-                            pending_state = state
-                            pending_since = now
-                        elif now - pending_since >= delay:
-                            log.info("Triggered → %s", result.summary())
-                            self.player.transition_to(state)
-                            # Emit signal — Qt delivers this on the main thread
-                            self._detected.emit(state, result)
-                            last = state
-                            pending_state = None
-
-                        self._stop_event.wait(self._detection_interval)
             except Exception:
-                log.exception("Detection loop crashed")
+                log.exception("Capture worker crashed")
             finally:
-                log.info("Detection loop stopped")
+                log.info("Capture worker stopped")
 
-        threading.Thread(target=loop, daemon=True).start()
+        # --- Thread 2: detection worker ---
+        def detection_worker() -> None:
+            source_label = (
+                self._capture_device or
+                (self._capture_window.title if self._capture_window else "full screen")
+            )
+            log.info("Detection worker started (source=%s)", source_label)
+            last = self._current_state
+            pending_state: GameState | None = None
+            pending_since: float = 0.0
+
+            try:
+                while not self._stop_event.is_set():
+                    # Sync with any manual override between iterations
+                    ext = self._current_state
+                    if ext != last and ext != GameState.UNKNOWN:
+                        log.debug("Manual override: %s → %s", last.value, ext.value)
+                        last = ext
+                        pending_state = None
+
+                    frame = buffer.get(timeout=0.5)
+                    if frame is None or self._stop_event.is_set():
+                        continue
+
+                    try:
+                        fs = STREAMLINE_MAP.get(last) if self._streamline else None
+                        result = detector.detect_result(frame, fs)
+                    except Exception:
+                        log.exception("Detection failed")
+                        continue
+
+                    self._frame_ready.emit(frame, result)
+
+                    state = result.state if result else GameState.UNKNOWN
+                    delay = result.trigger_delay if result else 0.0
+                    now = time.time()
+
+                    if state == GameState.UNKNOWN or state == last:
+                        pending_state = None
+                    elif state != pending_state:
+                        log.debug("Pending: %s (delay=%.1fs)", state.value, delay)
+                        pending_state = state
+                        pending_since = now
+                    elif now - pending_since >= delay:
+                        log.info("Triggered → %s", result.summary())
+                        self.player.transition_to(state)
+                        self._detected.emit(state, result)
+                        last = state
+                        pending_state = None
+
+                    self._stop_event.wait(self._detection_interval)
+            except Exception:
+                log.exception("Detection worker crashed")
+            finally:
+                log.info("Detection worker stopped")
+
+        threading.Thread(target=capture_worker, daemon=True).start()
+        threading.Thread(target=detection_worker, daemon=True).start()
 
     def _on_detected(self, state: GameState, result) -> None:
         """Slot — always runs on main thread via Qt signal dispatch."""
@@ -1529,6 +1610,54 @@ class MainWindow(QMainWindow):
         self._set_state(state)
         self.statusBar().showMessage(f"Forced state: {state.value}")
 
+    def _on_external_force(self, state: GameState) -> None:
+        """Slot — handles forced state from HTTP server or global hotkey (main thread)."""
+        self.player.transition_to(state)
+        self._set_state(state)
+        self._debug_tab.append_detection(state, None)
+        self.statusBar().showMessage(f"Remote forced: {state.value.upper()}", 3000)
+        # Sync the force combo so the UI reflects the override
+        self._force_combo.blockSignals(True)
+        for i in range(1, self._force_combo.count()):
+            if self._force_combo.itemData(i) == state:
+                self._force_combo.setCurrentIndex(i)
+                break
+        self._force_combo.blockSignals(False)
+
+    def _toggle_http_server(self, checked: bool) -> None:
+        if checked:
+            host = self._hotkeys_tab.get_http_host()
+            port = self._hotkeys_tab.get_http_port()
+            try:
+                self._http_server = ControlServer(
+                    host=host,
+                    port=port,
+                    force_state_cb=lambda s: self._external_force.emit(s),
+                    get_state_cb=lambda: self._current_state.value,
+                    skip_cb=self.player.skip,
+                    pause_cb=self.player.pause,
+                )
+                self._http_server.start()
+                self._http_btn.setText(f"HTTP: {port}")
+                self._http_btn.setStyleSheet("background: #2e7d32; color: white;")
+                self.statusBar().showMessage(f"HTTP server running on {host}:{port}", 5000)
+                log.info("HTTP control server started on %s:%d", host, port)
+            except Exception as e:
+                self._http_btn.setChecked(False)
+                self._http_btn.setText("HTTP: OFF")
+                self._http_btn.setStyleSheet("")
+                log.error("HTTP server failed to start: %s", e)
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(self, "HTTP server error", str(e))
+        else:
+            if self._http_server:
+                self._http_server.stop()
+                self._http_server = None
+            self._http_btn.setText("HTTP: OFF")
+            self._http_btn.setStyleSheet("")
+            self.statusBar().showMessage("HTTP server stopped", 3000)
+            log.info("HTTP control server stopped")
+
     def _update_playback_flags(self) -> None:
         playlist = self.player.get_playlist(self._current_state)
         if playlist:
@@ -1551,6 +1680,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._stop_event.set()
         self._close_device_preview()
+        if self._http_server:
+            self._http_server.stop()
+        self._hotkeys_tab.stop_hotkeys()
         logging.getLogger("battlemode").removeHandler(self._log_handler)
         self.player.stop()
         _track_settings.save()

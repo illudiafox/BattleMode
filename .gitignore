@@ -36,3 +36,6 @@ logs/
 
 # Environment
 .env
+
+# Local music downloader utility
+ytdl.py
